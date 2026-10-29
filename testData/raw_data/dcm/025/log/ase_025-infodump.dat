@@ -1,0 +1,26 @@
+Manufacturer Siemens Healthineers
+ScannerModel MAGNETOM Prisma Fit 
+SoftwareVersion syngo MR XA30 
+ScannerSerialNo 67026 
+Institution MGH PrismaFit-Bay4
+SeriesDescription a_ep2d_ase_vtzRG_XA30A_2e_4p8_phase_e2
+StudyUID 1.3.12.2.1107.5.2.43.67026.30000025081614315235600000007
+StudyDate 20250816
+StudyTime 150616.200000 
+PatientName bch046_250816 
+SeriesNo 25
+ImageNo 44
+AcquisitionType 2D
+ImageType ORIGINAL\PRIMARY\P\NONE 
+FieldStrength 3 
+ProtocolName a_ep2d_ase_vtzRG_XA30A_2e_4p8 
+PatientPosition HFS 
+SliceDistance 4.8 
+NRows 128
+NCols 128
+BitsPerPixel 16
+HighBit 11
+SmallestValue 0
+LargestValue 4095
+TransferSyntax 1.2.840.10008.1.2.1
+Not Siemens --Siemens Healthineers--

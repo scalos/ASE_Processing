@@ -1,0 +1,25 @@
+Manufacturer Siemens Healthineers
+ScannerModel MAGNETOM Prisma Fit 
+SoftwareVersion syngo MR XA30 
+ScannerSerialNo 67026 
+Institution MGH PrismaFit-Bay4
+SeriesDescription ABCD_T1w_MPR_vNav RMS 
+StudyUID 1.3.12.2.1107.5.2.43.67026.30000025081614315235600000007
+StudyDate 20250816
+StudyTime 150616.200000 
+PatientName bch046_250816 
+SeriesNo 11
+ImageNo 1 
+AcquisitionType 3D
+ImageType ORIGINAL\PRIMARY\OTHER\NONE 
+FieldStrength 3 
+ProtocolName ABCD_T1w_MPR_vNav 
+PatientPosition HFS 
+NRows 256
+NCols 256
+BitsPerPixel 16
+HighBit 11
+SmallestValue 0
+LargestValue 3817
+TransferSyntax 1.2.840.10008.1.2.1
+Not Siemens --Siemens Healthineers--
