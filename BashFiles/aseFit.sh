@@ -1,39 +1,39 @@
 #!/bin/bash
-# ---- defaults (accessible from command line) ----
-allSubjDir="/autofs/space/guasha_004/users/crbc/yen/ase"
-dlist=datalist_ase
+
+scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repoDir="$(cd "$scriptDir/.." && pwd)"
+
+allSubjDir=""
+singleSubjDir=""
+dataList="datalist_ase"
 echo1Col=28
-matdir="/autofs/space/guasha_004/users/crbc/yen/ase/sc_analysis_code"
-B0=3
+matdir=$repoDir
+B0=""
 regenTransform=0
 interpMethod=linear
 tformName=ase_base_al_mat.aff12.1D
+
 # segmentation-mode inputs (used when -roiMode seg)
 segNamesStr="anat_fs_aparc_aseg_al.nii.gz,anat_fs_wmparc_al.nii.gz,anat_fs_bstem_al.nii.gz"
-segLUTsStr="/autofs/space/guasha_004/users/crbc/yen/ase/GM_WM_long.txt"
+segLUTsStr=""
 masterSeg=""   # grid used as -master for 3dAllineate; defaults to first entry of segNames if blank
 
 # ROI mode: files | seg | none
 roiMode=seg
-roiDirName=allROIs   # used only when -roiMode files
+roiDirName=allROIs   # used only when --roiMode files
 
 # repetition discovery. %ECHO% is substituted with the echo number (x3) per subject.
-repPattern="ase_%ECHO%_reg_r?.nii.gz"  # NOTE: only supports r1-r9 due to the single-character wildcard
+repPattern="ase_%ECHO%_reg_r?.nii.gz"
 
 # output layout
 fitsSubdir=fits
 writeOptsStr="maps,coeffs,stats"
 overwriteOptsStr="maps,coeffs,stats"
 tauRangeStr="0,43"   # leave empty ("") to omit tauRange entirely
-tCritBuffer=3        # ms on either side of critical time for ASE_Fitting_V3
+tCritBuffer=3        # ms on either side of critical time for ASE_Fitting
 
 runTimestamp=$(date +%Y%m%d_%H%M%S)
 
-# maintenance actions (run instead of the main pipeline, then exit)
-clearAllFits=0
-keepLatestN=0        # 0 = disabled
-rmLatestN=0          # 0 = disabled
-# todo: add purgeEmpty
 
 # ---- defaults (rarely changed, still CLI-accessible) ----
 aseSubjDir=session_ase   # subject-relative path to ase data (no leading/trailing slash)
@@ -43,55 +43,52 @@ omitFailLog=0
 retryFromFile=""     # failure file listing completed subjects; empty = disabled
 retryMostRecent=0
 
-tok='%ECHO%'
+echoGlob='%ECHO%'
 nl=$'\n'
+
 
 usage() {
 cat <<EOF
 Usage: $0 [options]
 
 Environment/Pipeline (Dependent on user / pipeline structure):
-  -allSubjDir <path>         Top-level directory containing subject folders (default: $allSubjDir)
-  -dlist <file>              Subject list filename, located in allSubjDir (default: $dlist)
-  -matdir <path>             Path to MATLAB analysis code (default: $matdir)
-  -aseSubjDir <dir>          Subject-relative path to ase data (default: $aseSubjDir)
-  -hdrPattern <str>          Pattern (with %ECHO% token) for header files (default: $hdrPattern)
-  -matlabBin <path>          Path to MATLAB binary (default: $matlabBin)
-  -echo1Col <value>          Column in header file corresponding to echo 1 (default: $echo1Col)
+  --allSubjDir <path>         Top-level directory containing subject folders (REQUIRED)
+  --singleSubjDir			 Path to single subjectDir. Overrides --allSubjDir (default: $singleSubjDir)
+  --dataList <file>           Subject list filename, located in allSubjDir (default: $dataList)
+  --matdir <path>             Path to MATLAB analysis code (default: $matdir)
+  --aseSubjDir <dir>          Subject-relative path to ase data (default: $aseSubjDir)
+  --hdrPattern <str>          Pattern (with %ECHO% token) for header files (default: $hdrPattern)
+  --matlabBin <path>          Path to MATLAB binary (default: $matlabBin)
+  --echo1Col <value>          Column in dataList file corresponding to echo 1 (default: $echo1Col)
 
 ASE Transforms:
-  -repPattern <glob>         Glob (with %ECHO% token) to discover ASE repetition files (default: $repPattern)
-  -interp <method>           3dAllineate interpolation: NN, linear, cubic, quintic, wsinc5 (default: $interpMethod)
-  -tformName <file>          File name for transform from subj space -> standard space (default: $tformName)
-  -regenTransform            Force regeneration of anat-space ASE transforms (default: off)
+  --repPattern <glob>         Glob (with %ECHO% token) to discover ASE repetition files (default: $repPattern)
+  --interp <method>           3dAllineate interpolation: NN, linear, cubic, quintic, wsinc5 (default: $interpMethod)
+  --tformName <file>          File name for transform from subj space -> standard space (default: $tformName)
+  --regenTransform            Force regeneration of anat-space ASE transforms (default: off)
 
 ROI source:
-  -roiMode <files|seg|none>  How to derive ROIs (default: $roiMode)
-  -roiDirName <dir>          [files mode] per-subject dir of individual ROI masks (default: $roiDirName)
-  -segNames <a,b,...>        [seg mode] segmentation volume filenames, relative to aseSubjDir (default: $segNamesStr)
-  -segLUTs <a,b,...>         [seg mode] LUT file path(s) matching segNames (default: $segLUTsStr)
-  -masterSeg <file>          Grid used as -master for the ASE transform step (default: first entry of -segNames)
+  --roiMode <files|seg|none>  How to derive ROIs (default: $roiMode)
+  --roiDirName <dir>          [files mode] per-subject dir of individual ROI masks (default: $roiDirName)
+  --segNames <a,b,...>        [seg mode] segmentation volume filenames, relative to aseSubjDir (default: $segNamesStr)
+  --segLUTs <a,b,...>         [seg mode] LUT file path(s) matching segNames (REQUIRED)
+  --masterSeg <file>          Grid used as -master for the ASE transform step (default: first entry of --segNames)
 
 Fitting options:
-  -tauRange <lo,hi>          Tau range in ms passed to ASE_Fitting_V3 (default: [$tauRangeStr]; empty = omit)
-  -B0 <value>                Field strength in Tesla passed to ASE_Fitting_V3 (default: $B0)
-  -tCritBuffer <value>       Time buffer in ms on either side of critical time (default: $tCritBuffer)
+  --tauRange <lo,hi>          Tau range in ms passed to ASE_fitting (default: [$tauRangeStr]; empty = omit)
+  --B0 <value>                Field strength in Tesla passed to ASE_fitting (REQUIRED)
+  --tCritBuffer <value>       Time buffer in ms on either side of critical time (default: $tCritBuffer)
 
 Fitting outputs:
-  -fitsSubdir <name>         Subdirectory (per-subject) that holds timestamped run folders (default: $fitsSubdir)
-  -writeOpts <a,b,...>       maps,coeffs,stats subset to write (default: $writeOptsStr)
-  -overwriteOpts <a,b,...>   maps,coeffs,stats subset allowed to overwrite (default: $overwriteOptsStr)
-
-Maintenance (run standalone, then exit):
-  -clearAllFits              Delete every subject's entire fitsSubdir, then exit
-  -keepLatest <N>            Keep only the N most recent run folders per subject, delete the rest, then exit
-  -rmLatest <N>              Remove the N most recent run folders per subject, then exit
+  --fitsSubdir <name>         Subdirectory (per-subject) that holds timestamped run folders (default: $fitsSubdir)
+  --writeOpts <a,b,...>       maps,coeffs,stats subset to write (default: $writeOptsStr)
+  --overwriteOpts <a,b,...>   maps,coeffs,stats subset allowed to overwrite (default: $overwriteOptsStr)
 
 Other:
-  -help                      Show this message
-  -omitFailLog               Do not write a failure log file (default: write log)
-  -retryFromFile <file>      Failure file listing subjects already completed (one per line); empty = disabled
-  -retryMostRecent           Retry using the most recent failure file in allSubjDir (default: off)
+  --help|-h                   Show this message
+  --omitFailLog               Do not write a failure log file (default: write log)
+  --retryFromFile <file>      Failure file listing subjects already completed (one per line); empty = disabled
+  --retryMostRecent           Retry using the most recent failure file in allSubjDir (default: off)
 EOF
 }
 
@@ -117,38 +114,37 @@ make_cell() {
 # ---- parse command-line flags ----
 while [[ $# -gt 0 ]]; do
 	case "$1" in
-		-allSubjDir)     need_arg "$@"; allSubjDir=$2;      shift 2 ;;
-		-dlist)          need_arg "$@"; dlist=$2;           shift 2 ;;
-		-matdir)         need_arg "$@"; matdir=$2;          shift 2 ;;
-		-B0)             need_arg "$@"; B0=$2;              shift 2 ;;
-		-interp)         need_arg "$@"; interpMethod=$2;    shift 2 ;;
-		-tformName)      need_arg "$@"; tformName=$2;       shift 2 ;;
-		-segNames)       need_arg "$@"; segNamesStr=$2;     shift 2 ;;
-		-segLUTs)        need_arg "$@"; segLUTsStr=$2;      shift 2 ;;
-		-masterSeg)      need_arg "$@"; masterSeg=$2;       shift 2 ;;
-		-roiMode)        need_arg "$@"; roiMode=$2;         shift 2 ;;
-		-roiDirName)     need_arg "$@"; roiDirName=$2;      shift 2 ;;
-		-repPattern)     need_arg "$@"; repPattern=$2;      shift 2 ;;
-		-fitsSubdir)     need_arg "$@"; fitsSubdir=$2;      shift 2 ;;
-		-writeOpts)      need_arg "$@"; writeOptsStr=$2;    shift 2 ;;
-		-overwriteOpts)  need_arg "$@"; overwriteOptsStr=$2; shift 2 ;;
-		-tauRange)       need_arg "$@"; tauRangeStr=$2;     shift 2 ;;
-		-aseSubjDir)     need_arg "$@"; aseSubjDir=$2;      shift 2 ;;
-		-hdrPattern)     need_arg "$@"; hdrPattern=$2;      shift 2 ;;
-		-keepLatest)     need_arg "$@"; keepLatestN=$2;     shift 2 ;;
-		-rmLatest)       need_arg "$@"; rmLatestN=$2;       shift 2 ;;
-		-matlabBin)      need_arg "$@"; matlabBin=$2;       shift 2 ;;
-		-echo1Col)       need_arg "$@"; echo1Col=$2;        shift 2 ;;
-		-tCritBuffer)    need_arg "$@"; tCritBuffer=$2;     shift 2 ;;
-		-retryFromFile)  need_arg "$@"; retryFromFile=$2;   shift 2 ;;
-		-regenTransform) regenTransform=1; shift ;;
-		-clearAllFits)   clearAllFits=1;   shift ;;
-		-omitFailLog)    omitFailLog=1;    shift ;;
-		-retryMostRecent) retryMostRecent=1; shift ;;
-		-h|-help)        usage; exit 0 ;;
+		--allSubjDir)     need_arg "$@"; allSubjDir=$2;      shift 2 ;;
+		--dataList)       need_arg "$@"; dataList=$2;        shift 2 ;;
+		--matdir)         need_arg "$@"; matdir=$2;          shift 2 ;;
+		--B0)             need_arg "$@"; B0=$2;              shift 2 ;;
+		--interp)         need_arg "$@"; interpMethod=$2;    shift 2 ;;
+		--tformName)      need_arg "$@"; tformName=$2;       shift 2 ;;
+		--segNames)       need_arg "$@"; segNamesStr=$2;     shift 2 ;;
+		--segLUTs)        need_arg "$@"; segLUTsStr=$2;      shift 2 ;;
+		--masterSeg)      need_arg "$@"; masterSeg=$2;       shift 2 ;;
+		--roiMode)        need_arg "$@"; roiMode=$2;         shift 2 ;;
+		--roiDirName)     need_arg "$@"; roiDirName=$2;      shift 2 ;;
+		--repPattern)     need_arg "$@"; repPattern=$2;      shift 2 ;;
+		--fitsSubdir)     need_arg "$@"; fitsSubdir=$2;      shift 2 ;;
+		--writeOpts)      need_arg "$@"; writeOptsStr=$2;    shift 2 ;;
+		--overwriteOpts)  need_arg "$@"; overwriteOptsStr=$2; shift 2 ;;
+		--tauRange)       need_arg "$@"; tauRangeStr=$2;     shift 2 ;;
+		--aseSubjDir)     need_arg "$@"; aseSubjDir=$2;      shift 2 ;;
+		--singleSubjDir)  need_arg "$@"; singleSubjDir=$2;   shift 2 ;;
+		--hdrPattern)     need_arg "$@"; hdrPattern=$2;      shift 2 ;;
+		--matlabBin)      need_arg "$@"; matlabBin=$2;       shift 2 ;;
+		--echo1Col)       need_arg "$@"; echo1Col=$2;        shift 2 ;;
+		--tCritBuffer)    need_arg "$@"; tCritBuffer=$2;     shift 2 ;;
+		--retryFromFile)  need_arg "$@"; retryFromFile=$2;   shift 2 ;;
+		--regenTransform) regenTransform=1; shift ;;
+		--clearAllFits)   clearAllFits=1;   shift ;;
+		--omitFailLog)    omitFailLog=1;    shift ;;
+		--retryMostRecent) retryMostRecent=1; shift ;;
+		-h|--help)        usage; exit 0 ;;
 		*)
 			echo "Unknown option: $1" >&2
-			echo "Usage: $0 [options]  (use -help for details)" >&2
+			echo "Usage: $0 [options]  (use --help for details)" >&2
 			exit 1
 			;;
 	esac
@@ -156,9 +152,9 @@ done
 
 # ---- cleanup runs on any exit (normal, error, Ctrl-C) ----
 cleanup() {
-	if [[ -n $mfile && -e $mfile ]]; then
-		rm -f "$mfile"
-		echo "Removed temporary matlab script: $mfile"
+	if [[ -n $tmpDir && -d $tmpDir ]]; then
+		rm -rf "$tmpDir"
+		echo "Removed temporary directory: $tmpDir"
 	fi
 	if [[ -n $runOutDir && -d $runOutDir ]]; then
 		# rmdir only succeeds on an empty directory
@@ -172,64 +168,24 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-####################### MAINTENANCE ###############################
+#check required fields:
+if [[ -z $allSubjDir && -z $segLUTsStr && -z $B0]]; then
+	echo "Error: Required fields (allSubjDir, segLUTsStr, B0) are not set"
+	exit 1
+fi
+
+#Form list of subjects to be fit:
 cd "$allSubjDir" || { echo "Error: cannot cd to $allSubjDir" >&2; exit 1; }
-mapfile -t subjlist < <(grep -v '#' "$allSubjDir/$dlist" | awk '{print $1}')
-
-# ---- maintenance actions: run and exit before touching matlab/transforms ----
-if ((clearAllFits == 1)); then
-	echo "Clearing all fit output for ${#subjlist[@]} subject(s)..."
-	for x in "${subjlist[@]}"; do
-		fitsPth="$allSubjDir/$x/$aseSubjDir/$fitsSubdir"
-		if [[ -d $fitsPth ]]; then
-			rm -rf "$fitsPth"
-			echo "  Removed: $fitsPth"
-		fi
-	done
-	echo "Done."
-	exit 0
+if [ -z "$singleSubjDir" ]; then
+    mapfile -t subjlist < <(grep -v '#' "$allSubjDir/$dataList" | awk '{print $1}')
+else
+    subjlist=("$singleSubjID")
 fi
 
-if ((keepLatestN > 0)); then
-	echo "Pruning to the $keepLatestN most recent run(s) per subject..."
-	for x in "${subjlist[@]}"; do
-		fitsPth="$allSubjDir/$x/$aseSubjDir/$fitsSubdir"
-		[[ -d $fitsPth ]] || continue
-		mapfile -t runDirs < <(ls -1 "$fitsPth")
-		nRuns=${#runDirs[@]}
-		((nRuns <= keepLatestN)) && continue
-		nToDelete=$((nRuns - keepLatestN))
-		for ((i = 0; i < nToDelete; i++)); do   # bash arrays are 0-based
-			rm -rf "$fitsPth/${runDirs[i]}"
-			echo "  Removed: $fitsPth/${runDirs[i]}"
-		done
-	done
-	echo "Done."
-	exit 0
-fi
 
-if ((rmLatestN > 0)); then
-	echo "Pruning the most recent $rmLatestN run(s) per subject..."
-	for x in "${subjlist[@]}"; do
-		fitsPth="$allSubjDir/$x/$aseSubjDir/$fitsSubdir"
-		[[ -d $fitsPth ]] || continue
-		mapfile -t runDirs < <(ls -1 "$fitsPth")
-		nRuns=${#runDirs[@]}
-		((nRuns <= rmLatestN)) && continue
-		nToDelete=$((nRuns - rmLatestN))
-		for ((i = nRuns - 1; i >= nToDelete; i--)); do
-			rm -rf "$fitsPth/${runDirs[i]}"
-			echo "  Removed: $fitsPth/${runDirs[i]}"
-		done
-	done
-	echo "Done."
-	exit 0
-fi
-
-##########################################################################
 # ---- validate roiMode up front ----
 if [[ $roiMode != files && $roiMode != seg && $roiMode != none ]]; then
-	echo "Error: -roiMode must be one of: files, seg, none (got: $roiMode)" >&2
+	echo "Error: --roiMode must be one of: files, seg, none (got: $roiMode)" >&2
 	exit 1
 fi
 
@@ -241,11 +197,11 @@ nSegLUTs=${#segLUTs[@]}
 
 if [[ $roiMode == seg ]]; then
 	if ((nSegNames == 0)); then
-		echo "Error: -roiMode seg requires at least one entry in -segNames" >&2
+		echo "Error: --roiMode seg requires at least one entry in --segNames" >&2
 		exit 1
 	fi
 	if ((nSegLUTs == 0)); then
-		echo "Error: -roiMode seg requires at least one entry in -segLUTs" >&2
+		echo "Error: --roiMode seg requires at least one entry in --segLUTs" >&2
 		exit 1
 	fi
 fi
@@ -253,18 +209,17 @@ fi
 if [[ -z $masterSeg ]]; then
 	if ((nSegNames > 0)); then
 		masterSeg=${segNames[0]}
-	else
-		masterSeg=anat_fs_aparc_aseg_al.nii.gz
 	fi
 fi
 
 segLUTsCell=""
 [[ $roiMode == seg ]] && segLUTsCell=$(make_cell "${segLUTs[@]}")
 
-mfile="$allSubjDir/run_ase_fit_batch.m"
-rm -f "$mfile"
+tmpDir=$(mktemp -d)
+mfile="$tmpDir/run_ase_fit_batch.m"
+
 echo "addpath(genpath('${matdir}'));" >> "$mfile"
-echo "dbstop if error;" >> "$mfile"
+#echo "dbstop if error;" >> "$mfile"
 
 # writeOpts/overwriteOpts are plain keyword lists (no spaces expected)
 writeOptsCell="{'$(echo "$writeOptsStr" | sed "s/,/','/g")'}"
@@ -294,7 +249,7 @@ if ((retryMostRecent == 1)); then
 fi
 if [[ -n $retryFromFile ]]; then
 	if [[ -n $retryFile && $retryFile != "$retryFromFile" ]]; then
-		echo "Warning: -retryMostRecent and -retryFromFile refer to different files; using -retryFromFile ($retryFromFile)"
+		echo "Warning: --retryMostRecent and --retryFromFile refer to different files; using --retryFromFile ($retryFromFile)"
 	fi
 	retryFile=$retryFromFile
 fi
@@ -342,11 +297,10 @@ for x in "${subjlist[@]}"; do
 
 	cd "$subjBase" || continue
 
-	# csh arrays are 1-based, bash arrays are 0-based -> echo1Col-1
 	datatmp=( $(grep "$x" "$allSubjDir/$dlist") )
 	x3=${datatmp[echo1Col-1]//ase_/}   # first echo number
 
-	hdrPth="$subjBase/${hdrPattern//"$tok"/$x3}"
+	hdrPth="$subjBase/${hdrPattern//"$echoGlob"/$x3}"
 	matPth="$subjBase/$tformName"
 
 	if [[ ! -e $hdrPth ]]; then
@@ -359,7 +313,7 @@ for x in "${subjlist[@]}"; do
 	fi
 
 	# ---- discover repetition files (we're cd'd into subjBase, so globs are relative) ----
-	repGlob=${repPattern//"$tok"/$x3}
+	repGlob=${repPattern//"$echoGlob"/$x3}
 	mapfile -t repFiles < <(ls -v $repGlob 2>/dev/null)   # unquoted on purpose: glob must expand
 	nReps=${#repFiles[@]}
 	if ((nReps == 0)); then

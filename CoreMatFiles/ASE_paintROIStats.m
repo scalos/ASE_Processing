@@ -1,7 +1,7 @@
-function ASE_paintROIStats(templateFiles, segLUTs, statsFile, outPath, opts, segOpts)
+function ASE_paintROIStats(templateFile, segLUT, statsFile, outPath, opts)
     arguments
-        templateFiles
-        segLUTs       %path to combined GM/WM/BS lookup table (code<TAB>name)
+        templateFile
+        segLUT       %path to combined GM/WM/BS lookup table (code<TAB>name)
         statsFile    %path to per-subject ROI stats csv (tab-delimited, row names = ROI names)
         outPath      %output path. Use glob %STAT% in name to include stat name.
         opts.compressOutputs = true;
@@ -9,22 +9,13 @@ function ASE_paintROIStats(templateFiles, segLUTs, statsFile, outPath, opts, seg
         opts.verbose = true
         opts.overwrite = true
         opts.defaultVal = 0; %initialization value used for painted volume
-        opts.comb_verbose = false;
-        segOpts.omitCodes
-        segOpts.omitNames
-        segOpts.warnUnusedCodes
-        segOpts.bkdCode
-        
     end
 
     v = opts.verbose;
 
-    % combine LUT and template files:
-    if v; fprintf('Combining template and LUT files...\n');end
-    fwd = namedargs2cell(segOpts);
-    [segTemp,LUT] = combineSegVols(templateFiles,segLUTs,'verbose',opts.comb_verbose,fwd{:});
-
-    tmpHdr = niftiinfo(templateFiles{1});
+    segTemp = templateFile;
+    LUT = segLUT;
+    tmpHdr = niftiinfo(templateFile{1});
     % --- load ROI stats table ---
     statsTbl = readtable(statsFile,'ReadRowNames',true);
     roiNames = statsTbl.Properties.RowNames;
@@ -37,8 +28,8 @@ function ASE_paintROIStats(templateFiles, segLUTs, statsFile, outPath, opts, seg
 
     volSize = size(segTemp);
     lutNames = {};
-    for idx = 1:numel(segLUTs)
-        [~,fileName] = fileparts(segLUTs{idx}); 
+    for idx = 1:numel(segLUT)
+        [~,fileName] = fileparts(segLUT{idx}); 
         lutNames(end+1) = {char(fileName)}; %#ok
     end
     lutNames = strjoin(lutNames,', ');

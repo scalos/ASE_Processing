@@ -1,4 +1,4 @@
-function ASE_Fitting_V3(B0,hdr_File,sorted_ASE_File,opts)
+function ASE_fitting(B0,hdr_File,sorted_ASE_File,opts)
     arguments
         B0 %Field strength
         hdr_File %Path to ase header file
