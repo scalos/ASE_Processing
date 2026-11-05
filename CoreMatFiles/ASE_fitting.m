@@ -3,7 +3,6 @@ function ASE_fitting(B0,hdr_File,sorted_ASE_File,opts)
         B0 %Field strength
         hdr_File %Path to ase header file
         sorted_ASE_File %path to ase .nii(.gz) file. Can be cell array of files to be averaged
-        opts.ROI_Files = {} %path to roi .nii(.gz) file. Can be cell array of multiple ROI's. Expected to already be aligned
         opts.segFiles = {}  %path to segentation file (or files). should match segLUT
         opts.segLUTs = {}    %path to segmentation LUT. Should match all segFiles
         opts.outPref = './ase_fitting_results'
@@ -25,16 +24,13 @@ function ASE_fitting(B0,hdr_File,sorted_ASE_File,opts)
     assert(~isempty(sorted_ASE_File),'No ASE file was passed!');
 
     assert(~isempty(opts.writeOpts),'No write options selected');
-    if ~isempty(opts.ROI_Files)&&~isempty(opts.segFiles)
-        error('Cannot set both ROI_Files and segFiles');
-    end
 
-    if xor(isempty(opts.segFiles),isempty(opts.segLUTs))
-        error('A LUT and segmented volume pair is required if using segmented ROI option.');
+    if (isempty(opts.segFiles)&&isempty(opts.segLUTs))
+        error("Both segFiles and segLUTs need to be provided for ROI analysis");
     end
 
     %warn but allow empty ROI's
-    if (isempty(opts.ROI_Files) && isempty(opts.segFiles)) && any(contains(opts.writeOpts,'stats'))
+    if (isempty(opts.segFiles)) && any(contains(opts.writeOpts,'stats'))
         %stats were asked for but either no ROI files were passed, or no
         %seg files were passed. either way there is no ROI information.
         warning('ROI Statistics output was requested but no ROI''s were passed. No statistics will be written.');
@@ -42,12 +38,8 @@ function ASE_fitting(B0,hdr_File,sorted_ASE_File,opts)
 
     %ensure all lists are cells:
     if ~iscell(sorted_ASE_File); sorted_ASE_File = {sorted_ASE_File}; end
-    if ~iscell(opts.ROI_Files); opts.ROI_Files = {opts.ROI_Files}; end
     if ~iscell(opts.segFiles); opts.segFiles = {opts.segFiles}; end
     if ~iscell(opts.segLUTs); opts.segLUTs = {opts.segLUTs}; end
-
-    %if using segmented ROIs:
-    segROI = ~isempty(opts.segLUTs);
 
     %parse header file:
     dTEs = readASEHeader(hdr_File);
@@ -56,19 +48,8 @@ function ASE_fitting(B0,hdr_File,sorted_ASE_File,opts)
     %write taus as dTE in ms:
     taus = dTEs_sorted(1:nReps:end)/1000;
     
-    
+    if v; fprintf('Averaging %d matching ASE files to use for fitting...\n',numel(sorted_ASE_File)); end
     sorted_ASE_Data = combineAseReps(sorted_ASE_File);
-    if v; fprintf('Averaged %d matching ASE files to use for fitting\n',numel(sorted_ASE_File)); end
-
-    ROIs = {};
-    ROI_Names = {};
-    if any(contains(opts.writeOpts,'stats'))
-        if segROI
-            [ROIs,ROI_Names] = getROIsFromLUT(opts.segFiles,opts.segLUTs,"verbose",v);
-        else
-            [ROIs,ROI_Names] = getROIsFromCell(ROI_Files,"verbose",v);
-        end
-    end
 
     %%%%%%%%%%%% FITTING %%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -144,8 +125,6 @@ function ASE_fitting(B0,hdr_File,sorted_ASE_File,opts)
                                                   'vecDesc','Lin. Fit Coeffs.',...
                                                   'intent','LinFitParams');
         end
-    
-        
         R2P = -cMat_long(:,:,:,2); %Hz
         b = cMat_long(:,:,:,1);
         vCBV = b-cMat_short(:,:,:,1);
@@ -174,66 +153,65 @@ function ASE_fitting(B0,hdr_File,sorted_ASE_File,opts)
     
     if any(contains(opts.writeOpts,'stats'))
         %compute ROI stats
-        roi_OEF = zeros(numel(ROIs),1);
-        roi_R2P = zeros(numel(ROIs),1);
-        roi_vCBV = zeros(numel(ROIs),1);
-        roi_cMatLong = zeros(numel(ROIs),3);
-        roi_cMatShort = zeros(numel(ROIs),3);
-        dt = 0;
-        totalROITime = 0;
-        maxNameLen = max(cellfun(@(x) numel(x),ROI_Names));
-        if ~isempty(ROIs)
-            for idx = 1:numel(ROIs)
-                roiTimer = tic;
-                ROI = ROIs{idx};
-                if isempty(ROI); continue; end
-                if v
-                    percentProg = round(idx/numel(ROIs)*100);
-                    totalROITime = totalROITime + dt;
-                    avgTime = totalROITime / idx;
-                    estSec = avgTime * (numel(ROIs)-idx);
-                    timeLeft = string(seconds(estSec),'hh:mm:ss');
-                    fprintf('Computing stats for ROI: %*s | %3d%% (%3d/%3d) %s remaining\n', ...
-                            maxNameLen,ROI_Names{idx},percentProg,idx,numel(ROIs),timeLeft);
-                end
-                
-                ase_short_ROI = sum(ase_short.*ROI,[1,2,3])/sum(ROI,'all');
-                ase_long_ROI = sum(ase_long.*ROI,[1,2,3])/sum(ROI,'all');
-                cMat_long_ROI = fitLongRegime(ase_long_ROI,taus_long/1000);
-                cMat_short_ROI = fitShortRegime(ase_short_ROI,taus_short/1000);
-                R2P_ROI = -cMat_long_ROI(2); %Hz
-                b_ROI = cMat_long_ROI(1);
-                vCBV_ROI = b_ROI-cMat_short_ROI(1);
-                OEF_ROI = R2P_ROI/(vCBV_ROI*(4/3)*pi*gamma*dChi_0*Hct*B0);
-                roi_OEF(idx) = OEF_ROI;
-                roi_R2P(idx) = R2P_ROI;
-                roi_vCBV(idx) = vCBV_ROI;
-                roi_cMatLong(idx,:) = cMat_long_ROI;
-                roi_cMatShort(idx,:) = cMat_short_ROI;
-                dt = toc(roiTimer);
-            end
+        if v; fprintf('Organizing regions...\n');end
+        [segVol,LUT] = combineSegVols(opts.segFiles,opts.segLUTs,"verbose",v,"keepOverlaps",1);
+        % --- one pass: mean signal per region for every tau --------------------
+        nReg   = height(LUT);
+        nVox   = prod(size(segVol,1:3));
+        nLayer = size(segVol,4);
+        
+        % ase_* assumed to be X x Y x Z x nTaus
+        aseS = reshape(ase_short, nVox, []);      % reshape does not copy
+        aseL = reshape(ase_long,  nVox, []);
+        
+        sumS = zeros(nReg, size(aseS,2));
+        sumL = zeros(nReg, size(aseL,2));
+        cnt  = zeros(nReg, 1);
+        
+        for L = 1:nLayer
+            lab = segVol(:,:,:,L);
+            [tf, loc] = ismember(lab(:), LUT.code);          % loc = LUT row of each voxel
+            vox = find(tf);
+            M = sparse(loc(vox), vox, 1, nReg, nVox);        % region-by-voxel membership
+            sumS = sumS + M*aseS;
+            sumL = sumL + M*aseL;
+            cnt  = cnt  + full(sum(M,2));
         end
-
-        %Purge bad rows:
-        goodRows_Bin = zeros(numel(ROI_Names),1);
-        for idx = 1:numel(ROI_Names)
-            if ~isempty(ROI_Names{idx})
-                goodRows_Bin(idx) = 1;
+        
+        meanS = sumS ./ cnt;      % NaN rows where cnt == 0 (empty region)
+        meanL = sumL ./ cnt;
+        
+        % --- per-region fits (cheap) -------------------------------------------
+        roi_OEF = nan(nReg,1);  roi_R2P = nan(nReg,1);  roi_vCBV = nan(nReg,1);
+        roi_cMatLong = nan(nReg,3);  roi_cMatShort = nan(nReg,3);
+        maxNameLen = max(strlength(string(LUT.name)));
+        
+        for idx = 1:nReg
+            if cnt(idx) == 0; continue; end
+            if v
+                percentProg = round(idx/nReg*100);
+                fprintf('Computing stats for ROI: %*s | %3d%% (%3d/%3d)\n', ...
+                        maxNameLen,LUT.name(idx),percentProg,idx,nReg);
             end
+        
+            ase_short_ROI = reshape(meanS(idx,:), 1,1,1,[]);   % same shape as before
+            ase_long_ROI  = reshape(meanL(idx,:), 1,1,1,[]);
+        
+            cMat_long_ROI  = fitLongRegime(ase_long_ROI,  taus_long/1000);
+            cMat_short_ROI = fitShortRegime(ase_short_ROI, taus_short/1000);
+            R2P_ROI  = -cMat_long_ROI(2);
+            b_ROI    = cMat_long_ROI(1);
+            vCBV_ROI = b_ROI - cMat_short_ROI(1);
+            OEF_ROI  = R2P_ROI/(vCBV_ROI*(4/3)*pi*gamma*dChi_0*Hct*B0);
+        
+            roi_OEF(idx) = OEF_ROI;   roi_R2P(idx) = R2P_ROI;   roi_vCBV(idx) = vCBV_ROI;
+            roi_cMatLong(idx,:) = cMat_long_ROI;   roi_cMatShort(idx,:) = cMat_short_ROI;
         end
-        goodRows = find(goodRows_Bin==1);
-        badRows = setdiff(1:numel(ROI_Names),goodRows);
-        ROI_Names(badRows) = [];
-        roi_OEF = roi_OEF(goodRows);
-        roi_R2P = roi_R2P(goodRows);
-        roi_vCBV = roi_vCBV(goodRows);
-        roi_cMatShort = roi_cMatShort(goodRows,:);
-        roi_cMatLong = roi_cMatLong(goodRows,:);
 
         roiData = table(roi_OEF,roi_R2P,roi_vCBV,roi_cMatShort(:,2),roi_cMatShort(:,1),roi_cMatShort(:,3),...
                                                  roi_cMatLong(:,2),roi_cMatLong(:,1),roi_cMatLong(:,3),...
                         'VariableNames',{'OEF','R2P','vCBV','M_S','B_S','RMS_S','M_L','B_L','RMS_L'},...
-                        'RowNames',ROI_Names);
+                        'RowNames',LUT.name);
         overwriteStats = any(contains(opts.overwriteOpts,'stats'));
         ROI_Tbl_Name = findGoodPath(sprintf("%s_ROI_Stats.csv",opts.outPref),overwriteStats);
         writetable(roiData, ROI_Tbl_Name, 'WriteRowNames', true, 'Delimiter', ',');
@@ -270,7 +248,6 @@ function ASE_fitting(B0,hdr_File,sorted_ASE_File,opts)
     
     manifest.segFiles = opts.segFiles;
     manifest.segLUTs  = opts.segLUTs;
-    manifest.ROI_Files = opts.ROI_Files;
     
     manifestPath = sprintf("%s_manifest_%s.json", opts.outPref, runTimestamp);
     fid = fopen(manifestPath, 'w');

@@ -1,9 +1,17 @@
 #!/bin/bash
 
+# exits the script if the flag has no value after it
+need_arg() {
+	if [[ $# -lt 2 ]]; then
+		echo "Error: $1 requires an argument" >&2
+		exit 1
+	fi
+}
+
 allSubjDir=""
 singleSubjDir=""
 dataList="datalist_ase"
-fitDir="/session_ase/fits"
+fitDir="session_ase/fits"
 clearAllFits=0
 keepLatestN=0
 rmLatestN=0
@@ -12,8 +20,8 @@ usage() {
     cat << EOF
 Usage: $0 [options]
 Options:
-  --allSubjDir <path>      Path to the directory containing all subjects (required)
-  --singleSubjDir <path>   Path to the directory of the single subject to process (if provided only this subject will be processed)
+  --allSubjDir <path>       
+  --singleSubjID <path>   Path to the directory of the single subject to process (if provided only this subject will be processed)
   --dataList <name>        Name of the data list file (required). First col is subj id, subsequent are scan names.
   --fitDir <path>          Path to the directory containing fit files relative to subject directories (required)
   --clearAllFits           Clear all fit output for all subjects
@@ -28,7 +36,7 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --allSubjDir|--allSubjDir=*)       need_arg "$@"; allSubjDir="$2"; shift 2;;
-        --singleSubjDir|--singleSubjDir=*) need_arg "$@"; singleSubjDir="$2"; shift 2;;
+        --singleSubjID|--singleSubjID=*)   need_arg "$@"; singleSubjID="$2"; shift 2;;
         --dataList|--dataList=*)           need_arg "$@"; dataList="$2"; shift 2;;
         --fitDir|--fitDir=*)               need_arg "$@"; fitDir="$2"; shift 2;;
         --clearAllFits)                    clearAllFits=1; shift ;;
@@ -45,9 +53,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 cd "$allSubjDir" || { echo "Error: cannot cd to $allSubjDir" >&2; exit 1; }
-
-if [ -z "$singleSubjDir" ]; then
-    mapfile -t subjlist < <(grep -v '#' "$allSubjDir/$dataList" | awk '{print $1}')
+if [ -z "$singleSubjID" ]; then
+    subjlist=()
+	while IFS= read -r line; do
+		subjlist+=("$line")
+	done < <(grep -v '#' "$allSubjDir/$dataList" | awk '{print $1}')
 else
     subjlist=("$singleSubjID")
 fi
@@ -72,13 +82,15 @@ if ((keepLatestN > 0)); then
 	for subj in "${subjlist[@]}"; do
 		fitsPth="$allSubjDir/$subj/$fitDir"
 		[[ -d $fitsPth ]] || continue
-		mapfile -t runDirs < <(ls -1 "$fitsPth")
+		shopt -s nullglob
+        runDirs=( "$fitsPth"/* )
+        shopt -u nullglob
 		nRuns=${#runDirs[@]}
 		((nRuns <= keepLatestN)) && continue
 		nToDelete=$((nRuns - keepLatestN))
 		for ((i = 0; i < nToDelete; i++)); do   # bash arrays are 0-based
-			rm -rf "$fitsPth/${runDirs[i]}"
-			echo "  Removed: $fitsPth/${runDirs[i]}"
+			rm -rf "${runDirs[i]}"
+			echo "  Removed: ${runDirs[i]}"
 		done
 	done
 	echo "Done."
@@ -90,13 +102,15 @@ if ((rmLatestN > 0)); then
 	for subj in "${subjlist[@]}"; do
 		fitsPth="$allSubjDir/$subj/$fitDir"
 		[[ -d $fitsPth ]] || continue
-		mapfile -t runDirs < <(ls -1 "$fitsPth")
+		shopt -s nullglob
+        runDirs=( "$fitsPth"/* )
+        shopt -u nullglob
 		nRuns=${#runDirs[@]}
 		((nRuns <= rmLatestN)) && continue
 		nToDelete=$((nRuns - rmLatestN))
 		for ((i = nRuns - 1; i >= nToDelete; i--)); do
-			rm -rf "$fitsPth/${runDirs[i]}"
-			echo "  Removed: $fitsPth/${runDirs[i]}"
+			rm -rf "${runDirs[i]}"
+			echo "  Removed: ${runDirs[i]}"
 		done
 	done
 	echo "Done."

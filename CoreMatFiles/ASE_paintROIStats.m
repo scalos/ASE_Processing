@@ -1,4 +1,4 @@
-function ASE_paintROIStats(templateFile, segLUT, statsFile, outPath, opts)
+function ASE_paintROIStats(templateFile, segLUT, statsFile, outPath, opts,segOpts)
     arguments
         templateFile
         segLUT       %path to combined GM/WM/BS lookup table (code<TAB>name)
@@ -9,17 +9,23 @@ function ASE_paintROIStats(templateFile, segLUT, statsFile, outPath, opts)
         opts.verbose = true
         opts.overwrite = true
         opts.defaultVal = 0; %initialization value used for painted volume
+        segOpts.omitCodes
+        segOpts.omitNames
+        segOpts.warnUnusedCodes
+        segOpts.bkdCode
     end
 
     v = opts.verbose;
-
-    segTemp = templateFile;
-    LUT = segLUT;
+    segArgs = namedargs2cell(segOpts);
+    [segTemp,LUT] = combineSegVols(templateFile,segLUT,...
+                                   "verbose",opts.verbose,...
+                                   "keepOverlaps",false, ...
+                                   segArgs{:});
     tmpHdr = niftiinfo(templateFile{1});
     % --- load ROI stats table ---
     statsTbl = readtable(statsFile,'ReadRowNames',true);
     roiNames = statsTbl.Properties.RowNames;
-    maxNameLen = max(strlength(LUT.name),[],'all');
+    maxNameLen = max(strlength(string(LUT.name)));
     maxCodeLen = max(strlength(string(num2str(LUT.code(:)))),[],'all');
     maxStatLen = max(strlength(opts.stats),[],'all');
     maxVoxLen = strlength(string(numel(segTemp)));
@@ -51,7 +57,7 @@ function ASE_paintROIStats(templateFile, segLUT, statsFile, outPath, opts)
         for r = 1:numel(roiNames)
             name = roiNames{r};
             if ismember(name,badNames)
-                if v; fprintf('Skipping region "%s" (previously determined invalid)',name); end
+                if v; fprintf('Skipping region "%s" (previously determined invalid)\n',name); end
                 continue;
             end
             val  = statsTbl.(statName)(r);

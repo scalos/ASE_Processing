@@ -21,25 +21,26 @@ make_cell() {
 
 # ---- cleanup runs on any exit (normal, error, Ctrl-C) ----
 cleanup() {
-	if [[ -n $matFile && -e $matFile ]]; then
-		rm -f "$matFile"
-		echo "Removed temporary matlab script: $matFile"
+	if [[ -n $tmpDir && -d $tmpDir ]]; then
+		rm -rf "$tmpDir"
+		echo "Removed temporary directory: $tmpDir"
 	fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
+scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repoDir="$(cd "$scriptDir/.." && pwd)"
 
-
-allSubjDir=""
-singleSubjDir=""
-tableRelDir=""
-tableName=""
-dataList=""
-templateDir=""
+allSubjDir="/autofs/space/guasha_004/users/crbc/yen/ase"
+singleSubjID=""
+tableRelDir="session_ase/fits"
+tableName="ase_fit_results_ROI_Stats.csv"
+dataList="datalist_ase"
+templateDir="/autofs/space/guasha_004/users/crbc/yen/templates"
 templateNames=""
-targetStats=""
-LUTs=""
-matDir=""
+targetStats="OEF,R2P,vCBV"
+LUTs="/autofs/space/guasha_004/users/crbc/yen/ase/GM_WM_long.txt"
+matDir=$repoDir
 outName="template_painted_%STAT%"
 omitCodes=()
 omitNames=""
@@ -50,19 +51,20 @@ usage() {
     cat << EOF
 Usage: $0 [options]
 Options:
-  --allSubjDir <path>      Path to the directory containing all subjects (required)
-  --singleSubjID <id>      ID of the single subject to process (if provided only this subject will be processed)
-  --tableRelDir <path>     Path to stats table relative to subject directories
-  --tableName <name>       Name of the stats table (required)
-  --dataList <name>        Name of the data list file (required). First col is subj id, subsequent are scan names.
-  --templateDir <path>     Path to the directory containing template files (required)
-  --templateNames <names>  Names of the template files (required)
-  --LUTs <names>           Names of the Look-Up Table files (required)
-  --matDir <path>          Path to directory containing matlab scripts
-  --targetStats <names>    Names of stats to be painted (required). Must match exactly with stats file headers.
-  --outName <name>         Name of the output file (required)
-  --omitCodes <codes>      Comma-separated list of codes to omit
-  --omitNames <names>      Comma-separated list of names to omit
+  --allSubjDir <path>      Path to the directory containing all subjects (default: $allSubjDir)
+  --singleSubjID <id>      ID of the single subject to process (if provided only this subject will be processed) (default: $singleSubjID)
+  --tableRelDir <path>     Path to stats table relative to subject directories (default: $tableRelDir)
+  --tableName <name>       Name of the stats table (default: $tableName)
+  --dataList <name>        Name of the data list file. First col is subj id, subsequent are scan names. (default: $dataList)
+  --templateDir <path>     Path to the directory containing template files (default: $templateDir)
+  --templateNames <names>  Names of the template files (default: $templateNames)
+  --LUTs <names>           Names of the Look-Up Table files (default: $LUTs)
+  --matDir <path>          Path to directory containing matlab scripts (default: $matDir)
+  --targetStats <names>    Names of stats to be painted (default: $targetStats)
+  --outName <name>         Name of the output file (default: $outName)
+  --omitCodes <codes>      Comma-separated list of codes to omit (default: None)
+  --omitNames <names>      Comma-separated list of names to omit (default: None)
+  --matlabBin <path>       Path to the MATLAB binary (default: $matlabBin)
   --verbose -v             verbosity
   -h, --help               Show this help message and exit
 EOF
@@ -72,7 +74,7 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --allSubjDir|--allSubjDir=*)       need_arg "$@"; allSubjDir="$2"; shift 2;;
-        --singleSubjDir|--singleSubjDir=*) need_arg "$@"; singleSubjDir="$2"; shift 2;;
+        --singleSubjID|--singleSubjID=*)   need_arg "$@"; singleSubjID="$2"; shift 2;;
         --tableRelDir|--tableRelDir=*)     need_arg "$@"; tableRelDir="$2"; shift 2;;
         --tableName|--tableName=*)         need_arg "$@"; tableName="$2"; shift 2;;
         --dataList|--dataList=*)           need_arg "$@"; dataList="$2"; shift 2;;
@@ -84,6 +86,7 @@ while [[ $# -gt 0 ]]; do
         --matDir|--matDir=*)               need_arg "$@"; matDir="$2"; shift 2;;
         --omitCodes|--omitCodes=*)         need_arg "$@"; omitCodes="$2"; shift 2;;
         --omitNames|--omitNames=*)         need_arg "$@"; omitNames="$2"; shift 2;;
+        --matlabBin|--matlabBin=*)         need_arg "$@"; matlabBin="$2"; shift 2;;
         --verbose|-v)       v=true; shift ;;
         -h|--help)           usage; exit 0 ;;
 		*)
@@ -102,8 +105,11 @@ if [ -z "$singleSubjID" ]; then
 else
     subjIDs=("$singleSubjID")
 fi
-matFile="/tmp/runPaint.m"
+
+tmpDir=$(mktemp -d)
+matFile="$tmpDir/runPaint.m"
 printf "addpath(genpath('$matDir'));\n" > "$matFile"
+printf "dbstop if error;" >> "$matFile"
 
 IFS=',' read -r -a templateNameArray <<< "$templateNames"
 tmpFiles=()
@@ -113,7 +119,6 @@ done
 IFS=',' read -r -a LUTs <<< "$LUTs"
 LUTs_cell=$(make_cell "${LUTs[@]}")
 tmpFiles_cell=$(make_cell "${tmpFiles[@]}")
-printf '%s\n' "[templateFile,segLUT] = combineSegVols($tmpFiles_cell, $LUTs_cell)"
 #begin loop over subjects:
 subjIdx=0
 nSubj=${#subjIDs[@]}
@@ -126,8 +131,10 @@ for subjID in "${subjIDs[@]}"; do
         statTbls=$(find "$subjDir/$tableRelDir" -name "$tableName")
         if [[ -n "$statTbls" ]]; then
             #Found Stats tables. Now loop over them:
-            for tbl in $statTbls; do
-                printf '%s\n' "runWithProgress(@() ASE_paintROIStats(templateFile, segLUT, \"$tbl\", \"$outName\",\"verbose\",v), '$subjID', $subjIdx, $nSubj)" >> "$matFile"
+            for tbl in "$statTbls"; do
+                dirpath=$(dirname "$tbl")
+                outPath="$dirpath/$outName"
+                printf '%s\n' "runWithProgress(@() ASE_paintROIStats($tmpFiles_cell, $LUTs_cell, \"$tbl\", \"$outPath\",\"verbose\",$v), '$subjID', $subjIdx, $nSubj)" >> "$matFile"
                 ((nqueued++))
             done
         else
@@ -140,9 +147,10 @@ done
 
 echo "exit;" >> "$matFile"
 if (( nqueued > 0 )); then
-    $matlabBin -batch "run('$matFile');"
+    cat $matFile
+    mFileName=$(basename "$matFile" .m);
+	echo "Opening MATLAB..."
+	"$matlabBin" -sd "$tmpDir" -nodesktop -nosplash -r "$mFileName"
 else
     echo "No subjects queued; skipping matlab"
 fi
-
-rm -f "$matFile"

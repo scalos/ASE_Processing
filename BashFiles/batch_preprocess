@@ -1,0 +1,333 @@
+#!/bin/tcsh
+
+# BATCH SCRIPT TO AUTOMATE INITIAL COMMANDS OF AFNI FMRI ANALYSIS
+
+# THIS SCRIPT IS FOR THE ANALYSIS OF FMRI DATA FROM
+# O2/CO2 PROJECT CARRIED OUT IN MGH-NMR CENTER
+
+# 1 is subjinit
+# 2 is boldrun
+
+if ($#argv > 3) then
+    echo usage:
+    echo $0 subjinit boldrun paranb
+    echo ' '
+    echo 'subjinit = INITIALS of the subject'
+    echo ' '
+    echo 'boldrun  = FILENAME of bold run'
+    echo '          e.g. bold_rest_005.nii'
+    echo ' '
+    echo 'paranb   = PARADIGM number (optional)'
+    echo '          e.g. 003'
+    echo ' '
+    echo 'e.g. $0 mdh001_200101 bold_rest_003.nii 003'
+    echo ' '
+    exit
+endif
+
+##### DIRECTORY ARCHITECTURE
+#                                                                        o2co2
+#                                                                          |
+#                     raw_data ---------------------- analyzed  ------------------------- fsrecon ------------------------- raw_data_physio
+#                        |                               |                                   |										|
+#        mdh001_200101 ----- ...         mdh001_200101 ----- ...             mdh001_200101 ----- ...				mdh001_200101 ----- ...
+#                                                |                                   |										|
+#                                          nii ----- session_ase ...           mri ----- ...				   physio_004 ----- ...
+#
+##### PREPARE THE NII DATASETS
+
+##### PREPARE paradigm in time
+
+##### PREPARE INFLATED BRAIN
+# cd o2co2
+# setenv SUBJECTS_DIR ./fsrecon
+# recon-all -subject mdh001 -i ./analyzed/mdh001_200101/nii/anat_003.nii -FLAIR ./analyzed/mdh001_200101/nii/t2_spc_flair_004.nii
+# recon-all -subjid mdh001_200101 -all
+
+##### SET YOUR VARIABLES HERE
+# stop at 'wait' to check the data and parameters before proceeding to the next step
+
+set boldblur           = 3          # FWHM  e.g. 3 for normalization
+#set boldmccensor       = 0.4        # extent of motion to be censored (previous, 0.3)
+#set boldoutcount       = 0.05        # fraction of voxels considered as outliers e.g. DOcensor 0.1
+
+##### RUN THE BASIC SECTIONS
+set DOboldread                  = 0     # 
+set DOdespike                   = 0     # caution for the last 8 volumes; skip it
+set DOtshift                    = 0     # caution for artifact on time series
+set DOrecondata_xdespiketshift	= 0		# 
+set DOmotion                    = 0     # 
+
+set DOcensor                    = 0     # do NOT use censoring at the moment
+set DOconvertmask				= 0		#
+set DOregisterase				= 0		#
+set DOmean						= 0		#
+set DOSNR						= 0		#
+
+
+##### GET THE PATH AND INITIALS OF THE SUBJECT
+
+set curdir = `pwd`
+
+##### GET THE PATH AND INITIALS OF THE SUBJECT FROM ARG
+set subjinit = $1
+set boldrun = `echo $2 | sed 's/.nii//g'`
+set paranb = $3
+set direc = $curdir/analyzed/$subjinit
+set direc_fs = $curdir/o2co2_inflated
+
+##### DOUBLE-CHECK THE PATHS
+
+echo The INITIALS of subject is $subjinit
+echo The PATH of subject is $direc
+echo The PATH of inflated directory is $direc_fs
+
+setenv SUBJECTS_DIR $direc_fs
+    
+##### MAKE SESSION
+
+cd $direc
+if !(-e session_ase) then
+    mkdir session_ase
+endif
+
+cd $direc/session_ase
+echo the AFNI session is $direc/session_ase
+echo
+echo BON VOYAGE .....
+echo
+
+
+##### READ BOLD
+
+if ($DOboldread == 1) then
+	cd $direc
+	if !(-e session_ase) then
+		mkdir session_ase
+	endif
+    cd $direc/session_ase
+    if !(-e ${boldrun}.nii) then
+    	if !(-e $direc/nii/${boldrun}.nii) then
+    		if (-e $direc/nii/${paranb}) then
+    			cd $direc/nii
+				set Nf = `ls -ld $direc/nii/${paranb}/MR.* | wc -l`
+				if (`echo "$Nf > 500" | bc`) then
+					dcm2niix_afni -f ${boldrun} -o $direc/nii $direc/nii/${paranb}
+				else
+					Dimon -infile_pattern "./${paranb}/MR.*" -gert_create_dataset -gert_to3d_prefix ${boldrun}.nii
+    			endif
+    			#jq -r '.SliceTiming' ${boldrun}.json | sed -e '/\[/d' -e '/\]/d' -e 's/,//g'  			
+    		endif
+    	endif
+		cp $direc/nii/${boldrun}.nii $direc/session_ase/
+	endif
+	#if (-e $direc/nii/${boldrun}.nii) then
+	#	if (-e $direc/nii/${paranb}) then
+	#		rm -rf $direc/nii/${paranb}
+	#	endif
+	#endif
+	cd $direc/session_ase
+	if (-e ${boldrun}.nii) then
+		set deobltmp = `3dinfo ${boldrun}.nii | grep 'Data Axes Tilt:' | sed -e 's/Data Axes Tilt: //g' -e 's/\([A-Z][a-z]*\).*/\1/'`	
+		if ($deobltmp == Oblique) then
+			3drefit -deoblique ${boldrun}.nii
+			echo readdeobl $boldrun done `date +%Y%m%d` `date +%T`
+		endif	
+		echo read $boldrun done `date +%Y%m%d` `date +%T`
+    endif
+endif
+
+##### DESPIKE
+
+if ($DOdespike == 1) then
+    cd $direc/session_ase
+	if !(-e ${boldrun}_despike.nii.gz) then
+	    3dDespike -NEW -nomask -prefix ${boldrun}_despike.nii.gz ${boldrun}.nii
+	    echo despike $boldrun done `date +%Y%m%d` `date +%T`
+	endif
+endif
+
+##### TIME SHIFT CORRECT
+
+if ($DOtshift == 1) then
+    cd $direc/session_ase
+	#if !(-e ${boldrun}_tshift.nii.gz) then
+	#    if (-e $direc/nii/${boldrun}_tpattern.1D) then
+	#		cp $direc/nii/${boldrun}_tpattern.1D tpattern.1D	    
+	#    	3dTshift -tzero 0 -tpattern @tpattern.1D -prefix ${boldrun}_tshift.nii.gz ${boldrun}_despike.nii.gz
+	#    	rm tpattern.1D	  
+	#    else  
+	#    	if (-e $direc/nii/${boldrun}.json) then
+	#    		jq -r '.SliceTiming' $direc/nii/${boldrun}.json | sed -e '/\[/d' -e '/\]/d' -e 's/,//g' > tpattern.1D
+	#    		3dTshift -tzero 0 -tpattern @tpattern.1D -prefix ${boldrun}_tshift.nii.gz ${boldrun}_despike.nii.gz
+	#    		mv tpattern.1D ${boldrun}_tpattern.1D
+	#    	else
+	#    		3dAttribute TAXIS_OFFSETS ${boldrun}.nii > tmp.1D
+	#    		1dtranspose tmp.1D > tpattern.1D
+	#			3dTshift -tzero 0 -tpattern @tpattern.1D -prefix ${boldrun}_tshift.nii.gz ${boldrun}_despike.nii.gz
+	#			mv tpattern.1D ${boldrun}_tpattern.1D
+	#    		rm tmp.1D
+	#    	endif
+	#    endif
+	#    echo tshift $boldrun done `date +%Y%m%d` `date +%T`
+	#endif
+	if !(-e ${boldrun}_tshift.nii.gz) then
+	    if (-e $direc/nii/${boldrun}_tpattern.1D) then
+			cp $direc/nii/${boldrun}_tpattern.1D tpattern.1D	    
+	    	3dTshift -tzero 0 -tpattern @tpattern.1D -prefix ${boldrun}_tshift.nii.gz ${boldrun}.nii
+	    	rm tpattern.1D	  
+	    else  
+	    	if (-e $direc/nii/${boldrun}.json) then
+	    		jq -r '.SliceTiming' $direc/nii/${boldrun}.json | sed -e '/\[/d' -e '/\]/d' -e 's/,//g' > tpattern.1D
+	    		3dTshift -tzero 0 -tpattern @tpattern.1D -prefix ${boldrun}_tshift.nii.gz ${boldrun}.nii
+	    		mv tpattern.1D ${boldrun}_tpattern.1D
+	    	else
+	    		3dAttribute TAXIS_OFFSETS ${boldrun}.nii > tmp.1D
+	    		1dtranspose tmp.1D > tpattern.1D
+				3dTshift -tzero 0 -tpattern @tpattern.1D -prefix ${boldrun}_tshift.nii.gz ${boldrun}.nii
+				mv tpattern.1D ${boldrun}_tpattern.1D
+	    		rm tmp.1D
+	    	endif
+	    endif
+	    echo tshift $boldrun done `date +%Y%m%d` `date +%T`
+	endif	
+endif
+
+##### READ IMAGE COMMENTS
+
+if ($DOrecondata_xdespiketshift == 1) then	
+	cd $direc
+	if !(-e session_ase) then
+		mkdir session_ase
+	endif
+	cd $direc/session_ase
+	Siemens_ase_XA30 $direc/nii/$paranb $direc/dcm.index.out ${paranb} 3
+	
+	set DTE = `awk '{print $4}' dcm_hdr_${paranb} | sed 's/_/ /g' | awk '{print $2}' | sed -e 's/DTE=//g' -e 's/us//g'`
+	#set T = `echo $DTE | awk '{for(i=1;i<=NF;i++) print 44000-$i}'`
+	set T = `echo $DTE | awk '{for(i=1;i<=NF;i++) print $i}'`
+	set T_indx = ( `echo "$T" | awk '{for(i=1;i<=NF;i++) print $i, i}' | sort -n -k1 -k2 | awk '{print $2 - 1}'` )
+	set r1 = ( `echo "$T_indx" | awk '{for(i=1; i<=NF; i+=2) print $i}' | sed 's/ /,/g'` )
+	set r2 = ( `echo "$T_indx" | awk '{for(i=2; i<=NF; i+=2) print $i}' | sed 's/ /,/g'` )
+	set r1_tmp = `echo $r1 | sed 's/ /,/g'`
+	set r2_tmp = `echo $r2 | sed 's/ /,/g'`
+	3dcalc -a "${boldrun}.nii[$r1_tmp]" -expr a -prefix ${boldrun}_r1.nii.gz
+	3dcalc -a "${boldrun}.nii[$r2_tmp]" -expr a -prefix ${boldrun}_r2.nii.gz
+endif
+
+##### MOTION CORRECT FOR BOLD RUN
+
+if ($DOmotion == 1) then
+    cd $direc/session_ase
+    #if (-e bold_base.nii) then
+    	foreach x (r1 r2)   
+			if !(-e ${boldrun}_reg_${x}.nii.gz) then
+				if !(-e ase_base.nii.gz) then
+					3dcalc -a "${boldrun}.nii[0]" -expr a -prefix ase_base.nii.gz
+
+				endif
+				3dvolreg -Fourier -twopass -twodup -base ase_base.nii.gz \
+					-dfile ${boldrun}_mc_${x}.1D -prefix ${boldrun}_reg_${x}.nii.gz ${boldrun}_${x}.nii.gz
+				echo motioncorrect $boldrun done `date +%Y%m%d` `date +%T`
+			endif
+		end
+    #endif
+endif
+
+##### MOTION CORRECT FOR BOLD RUN (SIMPLE PROJECTION)
+
+#if ($DOcensor == 1) then
+#    cd $direc
+#    if !(-e session_ase) then
+#    	mkdir session_ase
+#    endif
+#    cd $direc/session_ase
+#	ln -s $direc/session_ase/bold_base.nii .
+#    ln -s $direc/session_ase/bold_mask.nii .
+#    ln -s $direc/session_ase/${boldrun}.nii .
+#    ln -s $direc/session_ase/${boldrun}_despike.nii.gz .
+#    ln -s $direc/session_ase/${boldrun}_tshift.nii.gz .  
+#    ln -s $direc/session_ase/${boldrun}_reg.nii.gz .
+#    ln -s $direc/session_ase/${boldrun}_mc.1D .
+#	
+#	cd $direc/session_ase
+#	#if !(-e ${boldrun}_tproj_blur_ham+orig.BRIK) then
+#	if !(-e ${boldrun}_tproj_blur.nii.gz) then
+#		set boldtp = `3dAttribute DATASET_RANK ${boldrun}_tshift.nii.gz | awk '{print $2}'`
+#		@ tmptp = $boldtp - 1
+#		1d_tool.py -infile ${boldrun}_mc.1D'[1..6]' -set_nruns 1 -demean -write ${boldrun}_mc_demean.1D -overwrite
+#		1d_tool.py -infile ${boldrun}_mc.1D'[1..6]' -set_nruns 1 -derivative -write ${boldrun}_mc_deriv.1D -overwrite
+#		1d_tool.py -infile ${boldrun}_mc.1D'[1..6]' -set_nruns 1 -show_censor_count -censor_prev_TR -censor_motion ${boldmccensor} ${boldrun}_mc -overwrite
+#		3dToutcount -mask bold_mask.nii -fraction -polort 5 -legendre "${boldrun}.nii[${boldtprm}..${tmptp}]" > ${boldrun}_outcount.1D
+#		1deval -a ${boldrun}_outcount.1D -expr "1-step(a-${boldoutcount})" > ${boldrun}_outcount_censor.1D
+#		1deval -a ${boldrun}_mc_censor.1D -b ${boldrun}_outcount_censor.1D -expr "a*b" > ${boldrun}_censor_combined.1D
+#
+#		3dTstat -prefix ${boldrun}_mean.nii.gz ${boldrun}_reg.nii.gz
+#		3dcalc -float -a ${boldrun}_reg.nii.gz -b ${boldrun}_mean.nii.gz -expr 'a/b*100' -prefix ${boldrun}_reg_prcnt.nii.gz
+#		3dTproject -polort 5 -input ${boldrun}_reg_prcnt.nii.gz -censor ${boldrun}_censor_combined.1D -cenmode NTRP -mask bold_mask.nii \
+#			-prefix ${boldrun}_errts_tproj.nii.gz
+#		3dBlurInMask -mask bold_mask.nii -FWHM $boldblur -prefix ${boldrun}_tproj_blur.nii.gz ${boldrun}_errts_tproj.nii.gz		
+#		#3dTsmooth -hamming 5 -prefix ${boldrun}_tproj_blur_ham ${boldrun}_tproj_blur+orig
+#	endif
+#endif
+
+##### Convert masks to session_ase
+
+if ($DOconvertmask == 1) then
+    cd $direc/session_ase
+    3dAFNItoNIFTI -prefix anat_fs_brain_al.nii.gz $direc/session_afni_nortc/anat_fs_brain_al+orig
+    3dAFNItoNIFTI -prefix anat_fs_brain_al_mask.nii.gz $direc/session_afni_nortc/anat_fs_brain_al_mask+orig
+    3dAFNItoNIFTI -prefix anat_fs_xvent_mask_al.nii.gz $direc/session_afni_nortc/anat_fs_xvent_mask_al+orig
+    3dcalc -a $direc/aparc_mask/L_Cerebral_GM_mask+orig -b $direc/aparc_mask/R_Cerebral_GM_mask+orig -expr 'step(a+b)' -prefix LR_Cerebral_GM_mask.nii.gz
+    3dcalc -a $direc/aparc_mask/L_Cerebral_WM_mask+orig -b $direc/aparc_mask/R_Cerebral_WM_mask+orig -expr 'step(a+b)' -prefix LR_Cerebral_WM_mask.nii.gz
+endif  
+
+##### Register ase_base to brain
+
+if ($DOregisterase == 1) then
+    cd $direc/session_ase 
+	3dAFNItoNIFTI -prefix anat_fs_brain_al.nii.gz ../session_afni_nortc/anat_fs_brain_al+orig
+	3dAFNItoNIFTI -prefix anat_fs_brain_al_mask.nii.gz ../session_afni_nortc/anat_fs_brain_al_mask+orig
+	3dAFNItoNIFTI -prefix anat_fs_xvent_mask_al.nii.gz ../session_afni_nortc/anat_fs_xvent_mask_al+orig
+	if !(-e $direc/aparc_mask/LR_Cerebral_GM_mask.nii.gz) then
+		3dcalc -a $direc/aparc_mask/L_Cerebral_GM_mask+orig -b $direc/aparc_mask/R_Cerebral_GM_mask+orig -expr 'step(a+b)' -prefix $direc/aparc_mask/LR_Cerebral_GM_mask.nii.gz
+		3dcalc -a $direc/aparc_mask/L_Cerebral_WM_mask+orig -b $direc/aparc_mask/R_Cerebral_WM_mask+orig -expr 'step(a+b)' -prefix $direc/aparc_mask/LR_Cerebral_WM_mask.nii.gz	
+	endif
+	cp $direc/aparc_mask/LR_Cerebral_GM_mask.nii.gz .
+	cp $direc/aparc_mask/LR_Cerebral_WM_mask.nii.gz .
+	
+    if !(-e ase_base_al.nii.gz) then
+    	3dAllineate -prefix ase_base_al.nii.gz -base anat_fs_brain_al.nii.gz -master anat_fs_brain_al.nii.gz \
+			-source ase_base.nii.gz -twopass -cost lpa+ -1Dmatrix_save ase_base_al_mat.aff12.1D -autoweight -fineblur 1 -cmass
+    endif
+    #3dAllineate -1Dmatrix_apply ase_base_al_mat.aff12.1D -master anat_fs_brain_al.nii.gz -prefix ${boldrun}_blur_al.nii.gz ${boldrun}_blur.nii.gz     
+endif  
+
+##### Calculate mean across repetitions
+
+if ($DOmean == 1) then
+    cd $direc/session_ase	
+	3dMean -prefix ${boldrun}_reg_mean.nii.gz ${boldrun}_reg_r1.nii.gz ${boldrun}_reg_r2.nii.gz
+endif
+
+##### Increase SNR by resampling and smoothing
+
+if ($DOSNR == 1) then
+    cd $direc/session_ase	
+	3dresample -dxyz 4.0 4.0 8.0 -input ${boldrun}_reg_mean.nii.gz -prefix ${boldrun}_resamp.nii.gz
+	if !(-e ase_mask.nii.gz) then
+		cat_matvec ase_base_al_mat.aff12.1D -I > ase_base_al_inv_mat.aff12.1D
+		3dAllineate -1Dmatrix_apply ase_base_al_inv_mat.aff12.1D -interp NN -final NN \
+			-master ase_base.nii.gz -prefix ase_mask.nii.gz  -input anat_fs_xvent_mask_al.nii.gz
+	endif
+	#3dmerge -1blur_fwhm 3.0 -doall -prefix ${boldrun}_blur.nii.gz ${boldrun}_resamp.nii.gz		
+	3dBlurInMask -mask ase_mask.nii -FWHM $boldblur -prefix ${boldrun}_blur.nii.gz ${boldrun}_resamp.nii.gz
+endif
+
+##### Nonlinear fitting
+#3dNLfim -input ase_022_R2.nii.gz -noise 'Constant' -signal 'Exp() 'A*exp(-B*x)' -prefix ase_022_R2_fitted.nii.gz -nifti \
+#       -params 'A,B' -start '1,0.1' -step '0.1,0.01' -niter 500 -quiet
+
+
+
+echo congratulations! you finish analyzing ${subjinit}

@@ -11,6 +11,7 @@ function [segVol,LUT_found] = combineSegVols(segFiles,segLUTs,opts)
         opts.verbose = false;
         opts.omitCodes = [];
         opts.omitNames cell = {};
+        opts.keepOverlaps = true; % stack overlapping regions along an extra (last) dimension
         opts.warnUnusedCodes = false; %warn if some codes in volumes are not found in LUT's
     end
     v = opts.verbose;
@@ -94,11 +95,20 @@ function [segVol,LUT_found] = combineSegVols(segFiles,segLUTs,opts)
         missingStr = compressIntArr(missing,"joinChar",',');
         warning('Volume codes not in LUT(s): [%s]', missingStr);
     end
-    
 
-    segVol = ones(size(segVols{1}),'int32').*opts.bkdCode;
+    volSize = size(segVols{1});
+    nVox    = numel(segVols{1});
+    if opts.keepOverlaps
+        nLayers = nSegs+1; %extra layer to safeguard against greedy assignment     
+    else
+        nLayers = 1;
+    end
+    segVol = zeros(nVox, nLayers,'int32') + int32(opts.bkdCode);   % one column per layer
     LUT_found = cell(height(LUT),2);
-    maxCodeLen = max(strlength(string(num2str(LUT.code(:)))),[],'all');
+
+    maxNameLen = max(strlength(string(LUT.name)));
+    maxCodeLen = max(strlength(string(LUT.code)));
+    maxLayerDigits = strlength(string(nLayers));
     for idx = 1:height(LUT)
         code = LUT{idx,1};
         name = LUT{idx,2};
@@ -154,27 +164,46 @@ function [segVol,LUT_found] = combineSegVols(segFiles,segLUTs,opts)
             end
         end
         if ~isempty(matchingVolInds)
-            prev = segVol(matchingVolInds);
-            clash = prev ~= opts.bkdCode & prev ~= code;
-            if any(clash)
-                clashCodes = unique(prev(clash));
+            mask = matchingVolInds(:);
+            placed = false;
+            allClashCodes = [];
+            for L = 1:nLayers
+                prev  = segVol(mask, L);
+                clash = prev ~= opts.bkdCode & prev ~= code;
+                if ~any(clash)
+                    segVol(mask, L) = code;
+                    LUT_found(idx,:) = {code,name};
+                    placed = true;
+                    if v; fprintf('Wrote code %*d (%*s) to layer %*d from file(s) "%s"\n', ...
+                            maxCodeLen,code,maxNameLen,name,maxLayerDigits,L,fileNames); end
+                    break
+                end
+                allClashCodes = [allClashCodes; unique(prev(clash))]; %#ok<AGROW>
+            end
+        
+            if ~placed
+                clashCodes = unique(allClashCodes);
                 clashNames = strings(size(clashCodes));
                 for k = 1:numel(clashCodes)
                     nm = LUT.name(LUT.code == clashCodes(k));
-                    if isempty(nm); nm = "(not in LUT)"; end   % defensive fallback
+                    if isempty(nm); nm = "(not in LUT)"; end
                     clashNames(k) = nm(1);
                 end
-                clashTbl = strjoin(compose('   %6d   %s',clashCodes(:), clashNames(:)), newline);
-            
+                codeW    = max(4, max(strlength(string(clashCodes))));
+                header   = "     " + pad("code", codeW, 'left') + "   name";
+                clashTbl = strjoin("     " + pad(string(clashCodes(:)), codeW, 'left') + "   " + clashNames(:), newline);
+        
+                if opts.keepOverlaps
+                    outcome = sprintf('No free layer (of %d) for this region.', nLayers);
+                else
+                    outcome = 'Overlaps are not being kept (opts.keepOverlaps = false).';
+                end
                 warning(['Issue with code %d (%s) from file(s) "%s":\n' ...
-                         '-  Overlaps previously assigned voxels:\n' ...
-                         '     code   name\n' ...
-                         '%s\n' ...
-                         '=> Skipping this region...'], code, name, fileNames, clashTbl);
-            else
-                if v; fprintf('Wrote code %d (%s) from file(s) "%s"\n',code,name,fileNames);end
-                segVol(matchingVolInds) = code;
-                LUT_found(idx,:) = {code,name};
+                         '-  Overlaps previously assigned voxels in all %d layer(s):\n' ...
+                         '%s\n%s\n' ...
+                         '-  %s\n' ...
+                         '=> Skipping this region...'], ...
+                         code, name, fileNames, nLayers, header, clashTbl, outcome);
             end
         end
     end
@@ -184,17 +213,22 @@ function [segVol,LUT_found] = combineSegVols(segFiles,segLUTs,opts)
         segVol = [];
         LUT_found = table;
     else
-        maxCode = max(segVol(:));
-        if maxCode > intmax('int32')
+        % drop unused trailing layers
+        lastUsed = find(any(segVol ~= opts.bkdCode, 1), 1, 'last');
+        segVol = segVol(:, 1:lastUsed);
+        
+        minCode = min(segVol(:)); maxCode = max(segVol(:));
+        if maxCode > intmax('int32') || minCode < intmin('int32')
             error('Codes exceed int32 range.');
-        elseif maxCode > intmax('int16')
+        elseif maxCode > intmax('int16') || minCode < intmin('int16')
             warning('Some codes exceed int16 range, using int32...');
             segVol = int32(segVol);
         else
             segVol = int16(segVol);
         end
-        %get only non-empty rows:
-        LUT_found = LUT_found(any(~cellfun('isempty', LUT_found), 2), :);
+        segVol = reshape(segVol, [volSize, lastUsed]);
+        emptyIdx = all(cellfun(@isempty, LUT_found), 2);
+        LUT_found(emptyIdx,:) = [];
         LUT_found = cell2table(LUT_found,"VariableNames",{'code','name'});
     end
 end
