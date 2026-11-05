@@ -14,7 +14,7 @@ interpMethod=linear
 tformName=ase_base_al_mat.aff12.1D
 
 # segmentation-mode inputs (used when -roiMode seg)
-segNamesStr="anat_fs_aparc_aseg_al.nii.gz,anat_fs_wmparc_al.nii.gz,anat_fs_bstem_al.nii.gz"
+segNames="anat_fs_aparc_aseg_al.nii.gz,anat_fs_wmparc_al.nii.gz,anat_fs_bstem_al.nii.gz"
 segLUTs="/autofs/space/guasha_004/users/crbc/yen/ase/GM_WM_long.txt"
 masterSeg=""   # grid used as -master for 3dAllineate; defaults to first entry of segNames if blank
 outPref=ase_fit_results
@@ -71,7 +71,7 @@ ASE Transforms:
 ROI source:
   --roiMode <files|seg|none>  How to derive ROIs (default: $roiMode)
   --roiDirName <dir>          [files mode] per-subject dir of individual ROI masks (default: $roiDirName)
-  --segNames <a,b,...>        [seg mode] segmentation volume filenames, relative to aseSubjDir (default: $segNamesStr)
+  --segNames <a,b,...>        [seg mode] segmentation volume filenames, relative to aseSubjDir (default: $segNames)
   --segLUTs <a,b,...>         [seg mode] LUT file path(s) matching segNames (default: $segLUTs)
   --masterSeg <file>          Grid used as -master for the ASE transform step (default: first entry of --segNames)
 
@@ -121,8 +121,8 @@ while [[ $# -gt 0 ]]; do
 		--B0)             need_arg "$@"; B0=$2;              shift 2 ;;
 		--interp)         need_arg "$@"; interpMethod=$2;    shift 2 ;;
 		--tformName)      need_arg "$@"; tformName=$2;       shift 2 ;;
-		--segNames)       need_arg "$@"; segNamesStr=$2;     shift 2 ;;
-		--segLUTs)        need_arg "$@"; segLUTsStr=$2;      shift 2 ;;
+		--segNames)       need_arg "$@"; segNames=$2;     shift 2 ;;
+		--segLUTs)        need_arg "$@"; segLUTs=$2;      shift 2 ;;
 		--masterSeg)      need_arg "$@"; masterSeg=$2;       shift 2 ;;
 		--roiMode)        need_arg "$@"; roiMode=$2;         shift 2 ;;
 		--roiDirName)     need_arg "$@"; roiDirName=$2;      shift 2 ;;
@@ -189,8 +189,8 @@ if [[ $roiMode != files && $roiMode != seg && $roiMode != none ]]; then
 fi
 
 # ---- split comma-separated lists into arrays ----
-IFS=',' read -ra segNames <<< "$segNamesStr"
-IFS=',' read -ra segLUTs  <<< "$segLUTsStr"
+IFS=',' read -ra segNames <<< "$segNames"
+IFS=',' read -ra segLUTs  <<< "$segLUTs"
 nSegNames=${#segNames[@]}
 nSegLUTs=${#segLUTs[@]}
 

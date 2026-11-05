@@ -8,7 +8,7 @@ need_arg() {
 	fi
 }
 
-allSubjDir=""
+allSubjDir="/autofs/space/guasha_004/users/crbc/yen/ase"
 singleSubjDir=""
 dataList="datalist_ase"
 fitDir="session_ase/fits"
@@ -106,7 +106,7 @@ if ((rmLatestN > 0)); then
         runDirs=( "$fitsPth"/* )
         shopt -u nullglob
 		nRuns=${#runDirs[@]}
-		((nRuns <= rmLatestN)) && continue
+		((nRuns < rmLatestN)) && continue
 		nToDelete=$((nRuns - rmLatestN))
 		for ((i = nRuns - 1; i >= nToDelete; i--)); do
 			rm -rf "${runDirs[i]}"
