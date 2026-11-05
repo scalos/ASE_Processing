@@ -170,13 +170,6 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-#check required fields:
-for name in allSubjDir segLUTsStr B0; do
-	if [[ -z ${!name} ]]; then
-		echo "Error: required field '$name' is not set" >&2
-		exit 1
-	fi
-done
 
 #Form list of subjects to be fit:
 cd "$allSubjDir" || { echo "Error: cannot cd to $allSubjDir" >&2; exit 1; }
