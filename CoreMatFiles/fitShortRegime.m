@@ -1,4 +1,4 @@
-function cMat = FitShortRegime(ydata, xdata)
+function cMat = fitShortRegime(ydata, xdata)
     % Returns coefficient map where cMat(:,:,:,1) is C (additive),
     % cMat(:,:,:,2) is A (multiplicative), fitting Y = A*X^2 + C,
     % and cMat(:,:,:,3) is the RMS residual (log space)

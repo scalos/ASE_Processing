@@ -1,11 +1,17 @@
-function cMat = fitLongRegime(ydata, xdata)
+function cMat = fitLongRegime(ydata, xdata,opts)
+    arguments
+        ydata
+        xdata
+        opts.returnRMS = true;
+    end
+    
     % Returns coefficient map where cMat(:,:,:,1) is y-int,
     % cMat(:,:,:,2) is the slope, and cMat(:,:,:,3) is the RMS residual (log space)
     [Np,Nf,Ns,Nfr] = size(ydata);
-    cMat = zeros(Np,Nf,Ns, 3);
+    cMat = zeros(Np,Nf,Ns,3);
     X = [ones(numel(xdata),1), xdata(:)];   
     for sl = 1:size(ydata,3)
-        series = squeeze(ydata(:,:,sl,:));  
+        series = squeeze(ydata(:,:,sl,:)); s
         data_ = reshape(series, Np*Nf, Nfr)';
         data_(data_ <= 0) = NaN;
         logData = log(data_);

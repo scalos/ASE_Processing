@@ -1,99 +1,78 @@
 #!/bin/bash
 
+# Batch ASE fitting. Uses the outputs of the prep script (ase_e?_proc.nii.gz, ase_hdr.json,
+# <seg>_ase.nii.gz). No transforms are performed here.
+# Precedence: script defaults < config file ("pipeline" section) < command-line flags.
+# Fit options live in the config's "fit" section and are read by runASEFromConfig.m.
+# Written for basic bash (no mapfile, no associative arrays, no external dependencies).
+
 scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repoDir="$(cd "$scriptDir/.." && pwd)"
 
+# ---- defaults ----
 allSubjDir="/autofs/space/guasha_004/users/crbc/yen/ase"
 singleSubjID=""
 dataList="datalist_ase"
-echo1Col=28
-matdir=$repoDir
-B0="3"
-regenTransform=0
-interpMethod=linear
-tformName=ase_base_al_mat.aff12.1D
-
-# segmentation-mode inputs (used when -roiMode seg)
+nEchos=2
+aseSubjDir=session_ase
+aseProcName="ase_e%ECHO%_proc.nii.gz"
+hdrFileName=ase_hdr.json
 segNames="anat_fs_aparc_aseg_al.nii.gz,anat_fs_wmparc_al.nii.gz,anat_fs_bstem_al.nii.gz"
+segSuffix="_ase"
 segLUTs="/autofs/space/guasha_004/users/crbc/yen/ase/GM_WM_long.txt"
-masterSeg=""   # grid used as -master for 3dAllineate; defaults to first entry of segNames if blank
-outPref=ase_fit_results
-# ROI mode: files | seg | none
-roiMode=seg
-roiDirName=allROIs   # used only when --roiMode files
-
-# repetition discovery. %ECHO% is substituted with the echo number (x3) per subject.
-repPattern="ase_%ECHO%_reg_r?.nii.gz"
-
-# output layout
 fitsSubdir=fits
-writeOptsStr="maps,coeffs,stats"
-overwriteOptsStr="maps,coeffs,stats"
-tauRangeStr="0,43"   # leave empty ("") to omit tauRange entirely
-tCritBuffer=3        # ms on either side of critical time for ASE_Fitting
-
-runTimestamp=$(date +%Y%m%d_%H%M%S)
-
-
-# ---- defaults (rarely changed, still CLI-accessible) ----
-aseSubjDir=session_ase   # subject-relative path to ase data (no leading/trailing slash)
-hdrPattern=dcm_hdr_%ECHO%
+outPref=ase_fit_results
 matlabBin=matlab
+matdir=$repoDir
+B0=""                    # empty = read MagneticFieldStrength from each subject's header
+configFile=""
+fitOverrides=""          # accumulated "key":value items from --fit
+
 omitFailLog=0
-retryFromFile=""     # failure file listing completed subjects; empty = disabled
 retryMostRecent=0
+retryFromFile=""
+logPrefix="fitASE_failures"
 
-echoGlob='%ECHO%'
+echoTok='%ECHO%'
 nl=$'\n'
-
+runTimestamp=$(date +%Y%m%d_%H%M%S)
 
 usage() {
 cat <<EOF
 Usage: $0 [options]
 
-Environment/Pipeline (Dependent on user / pipeline structure):
-  --allSubjDir <path>         Top-level directory containing subject folders (default: $allSubjDir)
-  --singleSubjID			  ID of single subject to process. (default: $singleSubjDir)
-  --dataList <file>           Subject list filename, located in allSubjDir (default: $dataList)
-  --matdir <path>             Path to MATLAB analysis code (default: $matdir)
-  --aseSubjDir <dir>          Subject-relative path to ase data (default: $aseSubjDir)
-  --hdrPattern <str>          Pattern (with %ECHO% token) for header files (default: $hdrPattern)
-  --matlabBin <path>          Path to MATLAB binary (default: $matlabBin)
-  --echo1Col <value>          Column in dataList file corresponding to echo 1 (default: $echo1Col)
-  --outPref <str>             Prefix for output files (default: $outPref)
+Config:
+  --config <file>             JSON config (default: ase_config.json next to this script, if present)
+                              "pipeline" keys are read here; "fit" keys are read by MATLAB.
+  --fit key=value             Override a "fit" option (repeatable). Value is JSON; bare words are
+                              quoted automatically (e.g. --fit physBdClipVal=NaN --fit Hct=0.4
+                              --fit physBd_OEF=[0,1])
 
-ASE Transforms:
-  --repPattern <glob>         Glob (with %ECHO% token) to discover ASE repetition files (default: $repPattern)
-  --interp <method>           3dAllineate interpolation: NN, linear, cubic, quintic, wsinc5 (default: $interpMethod)
-  --tformName <file>          File name for transform from subj space -> standard space (default: $tformName)
-  --regenTransform            Force regeneration of anat-space ASE transforms (default: off)
+Pipeline options (override the config; defaults in brackets):
+  --allSubjDir <path>         [$allSubjDir]
+  --singleSubjID <id>         Process one subject only
+  --dataList <file>           [$dataList]
+  --aseSubjDir <dir>          [$aseSubjDir]
+  --nEchos <n>                [$nEchos]
+  --aseProcName <pattern>     Processed echo file name; must contain $echoTok when nEchos > 1 [$aseProcName]
+  --hdrFileName <file>        [$hdrFileName]
+  --segNames <a,b,...>        Segmentation names before the suffix is added; empty = no ROI stats [$segNames]
+  --segSuffix <str>           [$segSuffix]
+  --segLUTs <a,b,...>         LUT file path(s) [$segLUTs]
+  --fitsSubdir <name>         [$fitsSubdir]
+  --outPref <str>             [$outPref]
+  --matlabBin <path>          [$matlabBin]
+  --matdir <path>             MATLAB code location [$matdir]
+  --B0 <value>                Override field strength (default: from header)
 
-ROI source:
-  --roiMode <files|seg|none>  How to derive ROIs (default: $roiMode)
-  --roiDirName <dir>          [files mode] per-subject dir of individual ROI masks (default: $roiDirName)
-  --segNames <a,b,...>        [seg mode] segmentation volume filenames, relative to aseSubjDir (default: $segNames)
-  --segLUTs <a,b,...>         [seg mode] LUT file path(s) matching segNames (default: $segLUTs)
-  --masterSeg <file>          Grid used as -master for the ASE transform step (default: first entry of --segNames)
-
-Fitting options:
-  --tauRange <lo,hi>          Tau range in ms passed to ASE_fitting (default: [$tauRangeStr]; empty = omit)
-  --B0 <value>                Field strength in Tesla passed to ASE_fitting (default: $B0)
-  --tCritBuffer <value>       Time buffer in ms on either side of critical time (default: $tCritBuffer)
-
-Fitting outputs:
-  --fitsSubdir <name>         Subdirectory (per-subject) that holds timestamped run folders (default: $fitsSubdir)
-  --writeOpts <a,b,...>       maps,coeffs,stats subset to write (default: $writeOptsStr)
-  --overwriteOpts <a,b,...>   maps,coeffs,stats subset allowed to overwrite (default: $overwriteOptsStr)
-
-Other:
-  --help|-h                   Show this message
-  --omitFailLog               Do not write a failure log file (default: write log)
-  --retryFromFile <file>      Failure file listing subjects already completed (one per line); empty = disabled
-  --retryMostRecent           Retry using the most recent failure file in allSubjDir (default: off)
+Logging / retry:
+  --omitFailLog               Do not keep a log file
+  --retryMostRecent           Skip subjects completed in the most recent log
+  --retryFromFile <file>      Skip subjects completed in the given log
+  --help|-h
 EOF
 }
 
-# exits the script if the flag has no value after it
 need_arg() {
 	if [[ $# -lt 2 ]]; then
 		echo "Error: $1 requires an argument" >&2
@@ -101,48 +80,102 @@ need_arg() {
 	fi
 }
 
-# make_cell a b c  ->  {'a','b','c'}   (MATLAB cell array literal)
+# mq <str>: escape single quotes for a MATLAB string literal
+mq() { local sq="'"; printf '%s' "${1//$sq/$sq$sq}"; }
+
+# make_cell a b c -> {'a','b','c'}
 make_cell() {
-	local out="{" first=1 item
-	for item in "$@"; do
-		((first)) || out+=","
-		out+="'${item}'"
-		first=0
-	done
-	echo "${out}}"
+	local out="" item
+	for item in "$@"; do out+="${out:+,}'$(mq "$item")'"; done
+	printf '{%s}' "$out"
 }
 
-# ---- parse command-line flags ----
+# add_fit_override key=value
+add_fit_override() {
+	local kv=$1 k v
+	if [[ $kv != *=* ]]; then
+		echo "Error: --fit expects key=value (got: $kv)" >&2; exit 1
+	fi
+	k=${kv%%=*}; v=${kv#*=}
+	if [[ ! $k =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+		echo "Error: invalid --fit key: $k" >&2; exit 1
+	fi
+	if [[ $v =~ ^-?[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$ || $v == true || $v == false || $v == null \
+	      || $v == \[* || $v == \{* || $v == \"* ]]; then
+		:
+	else
+		v="\"$v\""
+	fi
+	fitOverrides+="${fitOverrides:+,}\"$k\":$v"
+}
+
+# cfg_get <pipeline-section-text> <key>: value, or return 1 if missing/null
+cfg_get() {
+	local line val
+	line=$(printf '%s\n' "$1" | grep "^[[:space:]]*\"$2\"[[:space:]]*:" | head -n 1)
+	[[ -n $line ]] || return 1
+	val=${line#*:}
+	val=$(printf '%s' "$val" | sed 's/^[[:space:]]*//; s/[[:space:]]*,[[:space:]]*$//; s/[[:space:]]*$//')
+	[[ $val == null ]] && return 1
+	if [[ $val == \"*\" ]]; then val=${val#\"}; val=${val%\"}; fi
+	printf '%s' "$val"
+}
+
+is_num() { [[ $1 =~ ^-?[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$ ]]; }
+
+log_raw() { if [[ -n $failFile && -e $failFile ]]; then printf '%s' "$1" >> "$failFile"; fi; }
+record_fail() { printf '%s' "$1"; failLog+=$1; ((nfail++)); }
+
+# ---- locate and load config (before flags, so flags win) ----
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+	if [[ ${args[i]} == --config ]]; then
+		if ((i + 1 >= ${#args[@]})); then echo "Error: --config requires an argument" >&2; exit 1; fi
+		configFile=${args[i+1]}
+	fi
+done
+if [[ -z $configFile && -e $scriptDir/ase_config.json ]]; then
+	configFile="$scriptDir/ase_config.json"
+fi
+if [[ -n $configFile ]]; then
+	if [[ ! -e $configFile ]]; then echo "Error: config file not found: $configFile" >&2; exit 1; fi
+	configFile="$(cd "$(dirname "$configFile")" && pwd)/$(basename "$configFile")"
+	pipeSec=$(tr -d '\r' < "$configFile" | awk '/"pipeline"[[:space:]]*:/ {f=1; next} f && /^[[:space:]]*}/ {exit} f')
+	if [[ -z $pipeSec ]]; then
+		echo "Warning: no \"pipeline\" section found in $configFile (script defaults used)"
+	fi
+	for key in allSubjDir dataList nEchos aseSubjDir aseProcName hdrFileName segNames segSuffix \
+	           segLUTs fitsSubdir outPref matlabBin matdir B0; do
+		if val=$(cfg_get "$pipeSec" "$key"); then printf -v "$key" '%s' "$val"; fi
+	done
+	echo "Using config: $configFile"
+else
+	echo "No config file found; using script defaults (MATLAB defaults for fit options)."
+fi
+
+# ---- parse flags ----
 while [[ $# -gt 0 ]]; do
 	case "$1" in
-		--allSubjDir)     need_arg "$@"; allSubjDir=$2;      shift 2 ;;
-		--dataList)       need_arg "$@"; dataList=$2;        shift 2 ;;
-		--matdir)         need_arg "$@"; matdir=$2;          shift 2 ;;
-		--B0)             need_arg "$@"; B0=$2;              shift 2 ;;
-		--interp)         need_arg "$@"; interpMethod=$2;    shift 2 ;;
-		--tformName)      need_arg "$@"; tformName=$2;       shift 2 ;;
-		--segNames)       need_arg "$@"; segNames=$2;     shift 2 ;;
-		--segLUTs)        need_arg "$@"; segLUTs=$2;      shift 2 ;;
-		--masterSeg)      need_arg "$@"; masterSeg=$2;       shift 2 ;;
-		--roiMode)        need_arg "$@"; roiMode=$2;         shift 2 ;;
-		--roiDirName)     need_arg "$@"; roiDirName=$2;      shift 2 ;;
-		--repPattern)     need_arg "$@"; repPattern=$2;      shift 2 ;;
-		--fitsSubdir)     need_arg "$@"; fitsSubdir=$2;      shift 2 ;;
-		--writeOpts)      need_arg "$@"; writeOptsStr=$2;    shift 2 ;;
-		--overwriteOpts)  need_arg "$@"; overwriteOptsStr=$2; shift 2 ;;
-		--tauRange)       need_arg "$@"; tauRangeStr=$2;     shift 2 ;;
-		--aseSubjID)     need_arg "$@"; aseSubjDir=$2;      shift 2 ;;
-		--singleSubjID)  need_arg "$@"; singleSubjID=$2;   shift 2 ;;
-		--hdrPattern)     need_arg "$@"; hdrPattern=$2;      shift 2 ;;
-		--matlabBin)      need_arg "$@"; matlabBin=$2;       shift 2 ;;
-		--echo1Col)       need_arg "$@"; echo1Col=$2;        shift 2 ;;
-		--tCritBuffer)    need_arg "$@"; tCritBuffer=$2;     shift 2 ;;
-		--retryFromFile)  need_arg "$@"; retryFromFile=$2;   shift 2 ;;
-		--outPref)        need_arg "$@"; outPref=$2;         shift 2 ;;
-		--regenTransform) regenTransform=1; shift ;;
-		--clearAllFits)   clearAllFits=1;   shift ;;
-		--omitFailLog)    omitFailLog=1;    shift ;;
+		--config)         need_arg "$@"; shift 2 ;;     # already handled
+		--fit)            need_arg "$@"; add_fit_override "$2"; shift 2 ;;
+		--allSubjDir)     need_arg "$@"; allSubjDir=$2;     shift 2 ;;
+		--singleSubjID)   need_arg "$@"; singleSubjID=$2;   shift 2 ;;
+		--dataList)       need_arg "$@"; dataList=$2;       shift 2 ;;
+		--aseSubjDir)     need_arg "$@"; aseSubjDir=$2;     shift 2 ;;
+		--nEchos)         need_arg "$@"; nEchos=$2;         shift 2 ;;
+		--aseProcName)    need_arg "$@"; aseProcName=$2;    shift 2 ;;
+		--hdrFileName)    need_arg "$@"; hdrFileName=$2;    shift 2 ;;
+		--segNames)       need_arg "$@"; segNames=$2;       shift 2 ;;
+		--segSuffix)      need_arg "$@"; segSuffix=$2;      shift 2 ;;
+		--segLUTs)        need_arg "$@"; segLUTs=$2;        shift 2 ;;
+		--fitsSubdir)     need_arg "$@"; fitsSubdir=$2;     shift 2 ;;
+		--outPref)        need_arg "$@"; outPref=$2;        shift 2 ;;
+		--matlabBin)      need_arg "$@"; matlabBin=$2;      shift 2 ;;
+		--matdir)         need_arg "$@"; matdir=$2;         shift 2 ;;
+		--B0)             need_arg "$@"; B0=$2;             shift 2 ;;
+		--retryFromFile)  need_arg "$@"; retryFromFile=$2;  shift 2 ;;
 		--retryMostRecent) retryMostRecent=1; shift ;;
+		--omitFailLog)    omitFailLog=1;      shift ;;
 		-h|--help)        usage; exit 0 ;;
 		*)
 			echo "Unknown option: $1" >&2
@@ -152,99 +185,87 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-# ---- cleanup runs on any exit (normal, error, Ctrl-C) ----
+if [[ ! $nEchos =~ ^[0-9]+$ ]] || ((nEchos < 1)); then
+	echo "Error: nEchos must be a positive integer (got: $nEchos)" >&2; exit 1
+fi
+if [[ -n $B0 ]] && ! is_num "$B0"; then
+	echo "Error: B0 must be numeric (got: $B0)" >&2; exit 1
+fi
+if ((nEchos > 1)) && [[ $aseProcName != *"$echoTok"* ]]; then
+	echo "Error: aseProcName must contain $echoTok when nEchos > 1 (got: $aseProcName)" >&2; exit 1
+fi
+
+overridesJson=""
+[[ -n $fitOverrides ]] && overridesJson="{${fitOverrides}}"
+
+segList=(); lutList=()
+[[ -n $segNames ]] && IFS=',' read -ra segList <<< "$segNames"
+[[ -n $segLUTs ]]  && IFS=',' read -ra lutList <<< "$segLUTs"
+nSeg=${#segList[@]}
+if ((nSeg > 0 && ${#lutList[@]} == 0)); then
+	echo "Error: segNames given but segLUTs is empty" >&2; exit 1
+fi
+
+# ---- cleanup (any exit) ----
+tmpDir=""; queuedDirs=(); queuedSubjs=(); queuedSubjBases=(); failFile=""
 cleanup() {
-	if [[ -n $tmpDir && -d $tmpDir ]]; then
-		rm -rf "$tmpDir"
-		echo "Removed temporary directory: $tmpDir"
-	fi
-	if [[ -n $runOutDir && -d $runOutDir ]]; then
-		# rmdir only succeeds on an empty directory
-		rmdir "$runOutDir" 2>/dev/null && echo "Removed empty runOutDir: $runOutDir"
-	fi
-	if [[ -n $failFile && -e $failFile && $omitFailLog -eq 1 ]]; then
-		rm -f "$failFile"
-		echo "Removed failure file: $failFile"
-	fi
+	local d
+	if [[ -n $tmpDir && -d $tmpDir ]]; then rm -rf "$tmpDir"; fi
+	for d in "${queuedDirs[@]}"; do rmdir "$d" 2>/dev/null && echo "Removed empty run folder: $d"; done
+	for d in "${queuedSubjBases[@]}"; do rmdir "$d/$fitsSubdir" 2>/dev/null; done
+	if [[ -n $failFile && -e $failFile && $omitFailLog -eq 1 ]]; then rm -f "$failFile"; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-
-#Form list of subjects to be fit:
+# ---- subject list ----
+# resolve to absolute: the loop cd's into each subject dir, which would break a relative path
+if [[ ! -d $allSubjDir ]]; then echo "Error: allSubjDir not found: $allSubjDir" >&2; exit 1; fi
+allSubjDir="$(cd "$allSubjDir" && pwd)"
+if [[ -n $retryFromFile && -e $retryFromFile ]]; then
+	retryFromFile="$(cd "$(dirname "$retryFromFile")" && pwd)/$(basename "$retryFromFile")"
+fi
+for ((li = 0; li < ${#lutList[@]}; li++)); do
+	lut=${lutList[li]}
+	if [[ $lut != /* && -d $(dirname "$lut") ]]; then
+		lutList[li]="$(cd "$(dirname "$lut")" && pwd)/$(basename "$lut")"
+	fi
+done
+if [[ -n $matdir && $matdir != /* && -d $matdir ]]; then matdir="$(cd "$matdir" && pwd)"; fi
+# locate matlab: shell aliases (e.g. zsh) are not visible to bash, so fall back to a standard install
+if ! command -v "$matlabBin" > /dev/null 2>&1; then
+	found=""
+	if [[ $matlabBin == matlab ]]; then
+		found=$(ls -1d /Applications/MATLAB_R*.app/bin/matlab 2>/dev/null | sort | tail -n 1)
+	fi
+	if [[ -n $found && -x $found ]]; then
+		echo "Note: '$matlabBin' not on PATH; using $found"
+		matlabBin=$found
+	else
+		echo "Error: MATLAB executable not found: $matlabBin (set --matlabBin or matlabBin in the config)" >&2
+		exit 1
+	fi
+fi
+# accept a subject folder path as well as a bare ID
+if [[ -n $singleSubjID ]]; then
+	singleSubjID=${singleSubjID%/}
+	singleSubjID=${singleSubjID##*/}
+fi
 cd "$allSubjDir" || { echo "Error: cannot cd to $allSubjDir" >&2; exit 1; }
 if [ -z "$singleSubjID" ]; then
-    subjlist=()
+	subjlist=()
 	while IFS= read -r line; do
 		subjlist+=("$line")
-	done < <(grep -v '#' "$allSubjDir/$dataList" | awk '{print $1}')
+	done < <(grep -v '#' "$allSubjDir/$dataList" | awk 'NF {print $1}')
 else
-    subjlist=("$singleSubjID")
+	subjlist=("$singleSubjID")
 fi
-
-# ---- validate roiMode up front ----
-if [[ $roiMode != files && $roiMode != seg && $roiMode != none ]]; then
-	echo "Error: --roiMode must be one of: files, seg, none (got: $roiMode)" >&2
-	exit 1
-fi
-
-# ---- split comma-separated lists into arrays ----
-IFS=',' read -ra segNames <<< "$segNames"
-IFS=',' read -ra segLUTs  <<< "$segLUTs"
-nSegNames=${#segNames[@]}
-nSegLUTs=${#segLUTs[@]}
-
-if [[ $roiMode == seg ]]; then
-	if ((nSegNames == 0)); then
-		echo "Error: --roiMode seg requires at least one entry in --segNames" >&2
-		exit 1
-	fi
-	if ((nSegLUTs == 0)); then
-		echo "Error: --roiMode seg requires at least one entry in --segLUTs" >&2
-		exit 1
-	fi
-fi
-
-if [[ -z $masterSeg ]]; then
-	if ((nSegNames > 0)); then
-		masterSeg=${segNames[0]}
-	fi
-fi
-
-segLUTsCell=""
-[[ $roiMode == seg ]] && segLUTsCell=$(make_cell "${segLUTs[@]}")
-
-tmpDir=$(mktemp -d)
-mfile="$tmpDir/run_ase_fit_batch.m"
-
-echo "addpath(genpath('${matdir}'));" >> "$mfile"
-echo "dbstop if error;" >> "$mfile"
-
-# writeOpts/overwriteOpts are plain keyword lists (no spaces expected)
-writeOptsCell="{'$(echo "$writeOptsStr" | sed "s/,/','/g")'}"
-overwriteOptsCell="{'$(echo "$overwriteOptsStr" | sed "s/,/','/g")'}"
-
-tauRangeArg=""
-[[ -n $tauRangeStr ]] && tauRangeArg=",'tauRange',[${tauRangeStr}]"
-
-tCritBufferArg=""
-[[ -n $tCritBuffer ]] && tCritBufferArg=",'tCrit_buffer',[${tCritBuffer}]"
-
 nsubj=${#subjlist[@]}
-
-# running totals for estimating avg time per transform
-totTime=0
-compCount=0
-avgTime=0
-
-failLog=""
-nfail=0
-nqueued=0
 
 # ---- retry handling ----
 retryFile=""
 if ((retryMostRecent == 1)); then
-	retryFile=$(ls -1t "$allSubjDir"/fitASE_failures_*.txt 2>/dev/null | head -n 1)
+	retryFile=$(ls -1t "$allSubjDir"/${logPrefix}_*.txt 2>/dev/null | head -n 1)
 fi
 if [[ -n $retryFromFile ]]; then
 	if [[ -n $retryFile && $retryFile != "$retryFromFile" ]]; then
@@ -258,226 +279,174 @@ if [[ -n $retryFile && ! -e $retryFile ]]; then
 fi
 completedSubjs=()
 if [[ -n $retryFile ]]; then
-	mapfile -t completedSubjs < <(awk '/^\+/ {print substr($1, 2)}' "$retryFile")
+	while IFS= read -r line; do
+		completedSubjs+=("$line")
+	done < <(awk '/^\+/ {print substr($1, 2)}' "$retryFile")
 	printf 'Skipping completed subjects from file: %s\nCompleted subjects:\n' "$retryFile"
-	for subj in "${completedSubjs[@]}"; do
-		printf '  - %s\n' "$subj"
-	done
+	for subj in "${completedSubjs[@]}"; do printf '  - %s\n' "$subj"; done
 fi
-failFile="$allSubjDir/fitASE_failures_${runTimestamp}.txt"
+
+failFile="$allSubjDir/${logPrefix}_${runTimestamp}.txt"
 echo "Run started: $(date)" > "$failFile"
 echo "Completed subjects:" >> "$failFile"
 
+tmpDir=$(mktemp -d)
+mfile="$tmpDir/run_ase_fit_batch.m"
+echo "addpath(genpath('$(mq "$matdir")'));" > "$mfile"
+
+failLog=""; nfail=0; exitCode=0
+
 echo "=================================================="
-echo "Starting batch ASE fitting for $nsubj subject(s)..."
+echo "Preparing ASE fitting for $nsubj subject(s)..."
 subj_i=0
 for x in "${subjlist[@]}"; do
 	((subj_i++))
 	if ((${#completedSubjs[@]} > 0)); then
 		if printf '%s\n' "${completedSubjs[@]}" | grep -qxF "$x"; then
 			echo "Skipping $x (already completed)"
-			echo "+$x" >> "$failFile"
+			log_raw "+$x${nl}"
 			continue
 		fi
 	fi
 
 	subjBase="$allSubjDir/$x/$aseSubjDir"
-
-	okay=1
-	missingReasons=""
+	okay=1; missingReasons=""; warnMsg=""
 
 	if [[ ! -d $subjBase ]]; then
-		msg="Skipping $x:${nl}  - subject directory not found: $subjBase${nl}"
-		printf '%s' "$msg"
-		failLog+=$msg
-		((nfail++))
+		record_fail "Skipping $x:${nl}  - subject directory not found: $subjBase${nl}"
 		continue
 	fi
-
 	cd "$subjBase" || continue
+	prepHint="(run the prep script first)"
 
-	datatmp=( $(grep "$x" "$allSubjDir/$dataList") )
-	x3=${datatmp[echo1Col-1]//ase_/}   # first echo number
-
-	hdrPth="$subjBase/${hdrPattern//"$echoGlob"/$x3}"
-	matPth="$subjBase/$tformName"
-
+	# ---- header ----
+	hdrPth="$subjBase/$hdrFileName"
 	if [[ ! -e $hdrPth ]]; then
-		okay=0
-		missingReasons+="  - header file not found: $hdrPth${nl}"
-	fi
-	if [[ ! -e $matPth ]]; then
-		okay=0
-		missingReasons+="  - transform file not found: $matPth${nl}"
+		okay=0; missingReasons+="  - header file not found: $hdrPth $prepHint${nl}"
 	fi
 
-	# ---- discover repetition files (we're cd'd into subjBase, so globs are relative) ----
-	repGlob=${repPattern//"$echoGlob"/$x3}
-	shopt -s nullglob
-	repFiles=( $repGlob )
-	shopt -u nullglob
-	nReps=${#repFiles[@]}
-	if ((nReps == 0)); then
-		okay=0
-		missingReasons+="  - no repetition files matched: $subjBase/$repGlob${nl}"
-	fi
-
-	# ---- resolve ROI inputs for this subject, per roiMode ----
-	roiDirPth="$subjBase/$roiDirName"
-	if [[ $roiMode == files ]]; then
-		if [[ ! -d $roiDirPth ]]; then
-			okay=0
-			missingReasons+="  - ROI directory not found: $roiDirPth${nl}"
+	# ---- ase files: one processed file per echo -> nEchos x 1 cell (rows = echos) ----
+	aseList=""
+	for ((ei = 1; ei <= nEchos; ei++)); do
+		fn=${aseProcName//"$echoTok"/$ei}
+		if [[ ! -e $subjBase/$fn ]]; then
+			okay=0; missingReasons+="  - echo $ei file not found: $subjBase/$fn $prepHint${nl}"
+			continue
 		fi
-	elif [[ $roiMode == seg ]]; then
-		for segName in "${segNames[@]}"; do
-			if [[ ! -e "$subjBase/$segName" ]]; then
-				okay=0
-				missingReasons+="  - segmentation file not found: $subjBase/$segName${nl}"
+		aseList+="${aseList:+;}'$(mq "$subjBase/$fn")'"
+	done
+	asePths="{${aseList}}"
+
+	# ---- B0 ----
+	subjB0=$B0
+	if [[ -z $subjB0 && -e $hdrPth ]]; then
+		subjB0=$(tr -d '\r' < "$hdrPth" | sed -n 's/^[[:space:]]*"MagneticFieldStrength"[[:space:]]*:[[:space:]]*\([-0-9.eE+]*\).*/\1/p' | head -n 1)
+		if ! is_num "$subjB0"; then
+			okay=0; missingReasons+="  - could not read MagneticFieldStrength from $hdrPth (use --B0)${nl}"
+		fi
+	fi
+
+	# ---- segmentation (already in ase space) and LUTs ----
+	segArgs=""
+	if ((nSeg > 0)); then
+		segPthList=()
+		for segName in "${segList[@]}"; do
+			base=${segName%.gz}; base=${base%.nii}
+			segOut="${base}${segSuffix}.nii.gz"
+			if [[ ! -e "$subjBase/$segOut" ]]; then
+				okay=0; missingReasons+="  - transformed segmentation not found: $subjBase/$segOut $prepHint${nl}"
+			fi
+			segPthList+=("$subjBase/$segOut")
+		done
+		for lut in "${lutList[@]}"; do
+			if [[ ! -e $lut ]]; then
+				okay=0; missingReasons+="  - LUT file not found: $lut${nl}"
 			fi
 		done
+		segArgs=",'segFiles',$(make_cell "${segPthList[@]}"),'segLUTs',$(make_cell "${lutList[@]}")"
 	fi
 
 	if ((okay == 0)); then
-		msg="Skipping $x:${nl}${missingReasons}"
-		printf '%s' "$msg"
-		failLog+=$msg
-		((nfail++))
+		record_fail "Skipping $x:${nl}${missingReasons}"
 		continue
 	fi
-
-	masterPth="$subjBase/$masterSeg"
-	if [[ ! -e $masterPth ]]; then
-		msg="Skipping $x: masterSeg file not found ($masterPth)${nl}"
-		printf '%s' "$msg"
-		failLog+=$msg
-		((nfail++))
-		continue
+	if [[ -n $warnMsg ]]; then
+		printf 'Warnings for %s:\n%s' "$x" "$warnMsg"
+		log_raw "Warnings for $x:${nl}${warnMsg}"
 	fi
 
-	# ---- transform each repetition from function space into anatomy space ----
-	repAnatFiles=()
-	for ((idx = 0; idx < nReps; idx++)); do
-		rep_i=$((idx + 1))
-		repFileBase=${repFiles[idx]}
-		repAnatFile=${repFileBase%.nii.gz}_anat.nii.gz
-		repAnatPth="$subjBase/$repAnatFile"
-		repAnatFiles+=("$repAnatFile")
-
-		if [[ ! -e $repAnatPth ]] || ((regenTransform == 1)); then
-			t0=$(date +%s)
-			3dAllineate -1Dmatrix_apply "$tformName" -source "$repFileBase" -master "$masterSeg" \
-				-prefix "$repAnatFile" -final "$interpMethod" -overwrite
-			t1=$(date +%s)
-			dt=$((t1 - t0))
-			totTime=$((totTime + dt))
-			((compCount++))
-			avgTime=$((totTime / compCount))
-
-			# approximate remaining-work estimate: assumes remaining subjects have the same rep count
-			repsLeftThisSubj=$((nReps - rep_i))
-			subjsLeft=$((nsubj - subj_i))
-			transformsLeft=$((repsLeftThisSubj + subjsLeft * nReps))
-			estSec=$((avgTime * transformsLeft))
-			hh=$((estSec / 3600))
-			mm=$(((estSec % 3600) / 60))
-			ss=$((estSec % 60))
-			printf 'Transforming rep %d/%d -> anat space for %s (subject %d/%d)\n' "$rep_i" "$nReps" "$x" "$subj_i" "$nsubj"
-			printf 'Est. time remaining: %02d:%02d:%02d\n\n' "$hh" "$mm" "$ss"
-		fi
-	done
-
-	anyMissing=0
-	for repAnatFile in "${repAnatFiles[@]}"; do
-		[[ -e "$subjBase/$repAnatFile" ]] || anyMissing=1
-	done
-	if ((anyMissing == 1)); then
-		msg="Transform failed for $x: one or more anat-space repetition files not produced${nl}"
-		printf 'Warning: %s' "$msg"
-		failLog+=$msg
-		((nfail++))
-		continue
-	fi
-
-	# ---- build asePths cell array from transformed repetition files ----
-	asePthList=()
-	for repAnatFile in "${repAnatFiles[@]}"; do
-		asePthList+=("$subjBase/$repAnatFile")
-	done
-	asePths=$(make_cell "${asePthList[@]}")
-
-	# ---- build ROI-related matlab args for this subject ----
-	roiArgStr=""
-	if [[ $roiMode == files ]]; then
-		mapfile -t roiFiles < <(ls "$roiDirPth")
-		if ((${#roiFiles[@]} == 0)); then
-			msg="Skipping $x: no files found in $roiDirPth${nl}"
-			printf '%s' "$msg"
-			failLog+=$msg
-			((nfail++))
-			continue
-		fi
-		roiPthList=()
-		for r in "${roiFiles[@]}"; do
-			roiPthList+=("$roiDirPth/$r")
-		done
-		roiArgStr=",'ROI_Files',$(make_cell "${roiPthList[@]}")"
-	elif [[ $roiMode == seg ]]; then
-		segPthList=()
-		for segName in "${segNames[@]}"; do
-			segPthList+=("$subjBase/$segName")
-		done
-		roiArgStr=",'segFiles',$(make_cell "${segPthList[@]}"),'segLUTs',${segLUTsCell}"
-	fi
-
-	# ---- output location: one timestamped run folder per batch invocation, per subject ----
+	# ---- run folder and matlab call ----
 	runOutDir="$subjBase/$fitsSubdir/$runTimestamp"
 	mkdir -p "$runOutDir"
-	outPref="$runOutDir/$outPref"
+	queuedDirs+=("$runOutDir"); queuedSubjs+=("$x"); queuedSubjBases+=("$subjBase")
+	outPrefFull="$runOutDir/$outPref"
 
-	printf '%s\n' "runWithProgress(@() ASE_fitting(${B0},'${hdrPth}',${asePths}${roiArgStr},'outPref','${outPref}','verbose',true,'writeOpts',${writeOptsCell},'overwriteOpts',${overwriteOptsCell}${tauRangeArg}${tCritBufferArg}), '${x}', ${subj_i}, ${nsubj});" >> "$mfile"
-	# record completed subject so a failed run can resume (append mode 'at', not 'wt')
-	printf '%s\n' "fID = fopen('${failFile}', 'at');" >> "$mfile"
-	printf '%s\n' "if fID ~=-1; fprintf(fID, '+${x}\n');end" >> "$mfile"
-	printf '%s\n' "if fID ~=-1; fclose(fID);end" >> "$mfile"
-	((nqueued++))
+	cfgArg=""; ovArg=""
+	[[ -n $configFile ]]    && cfgArg=",'cfgFile','$(mq "$configFile")'"
+	[[ -n $overridesJson ]] && ovArg=",'overrides','$(mq "$overridesJson")'"
+
+	{
+		printf '%s\n' "try"
+		printf '%s\n' "    runWithProgress(@() runASEFromConfig(${subjB0},'$(mq "$hdrPth")',${asePths},'$(mq "$runOutDir")'${cfgArg}${ovArg}${segArgs},'outPref','$(mq "$outPrefFull")'), '$(mq "$x")', ${subj_i}, ${nsubj});"
+		printf '%s\n' "    fID = fopen('$(mq "$failFile")', 'at');"
+		printf '%s\n' "    if fID ~= -1; fprintf(fID, '+%s\n', '$(mq "$x")'); fclose(fID); end"
+		printf '%s\n' "catch ME"
+		printf '%s\n' "    fprintf(2, 'ERROR for %s: %s\n', '$(mq "$x")', ME.message);"
+		printf '%s\n' "    fID = fopen('$(mq "$failFile")', 'at');"
+		printf '%s\n' "    if fID ~= -1; fprintf(fID, 'Failed %s (MATLAB error):\n  - %s\n', '$(mq "$x")', strrep(ME.message, newline, ' ')); fclose(fID); end"
+		printf '%s\n' "end"
+	} >> "$mfile"
 done
 cd "$allSubjDir" || exit 1
 
-echo "exit;" >> "$mfile"
-
+# ---- run matlab once; failures are isolated by try/catch per subject ----
+nqueued=${#queuedSubjs[@]}
+matStatus=0
 if ((nqueued > 0)); then
-	mFileName=$(basename "$mfile" .m);
-	echo "Opening MATLAB..."
-	"$matlabBin" -sd "$tmpDir" -nodesktop -nosplash -r "$mFileName"
+	echo "Opening MATLAB for $nqueued subject(s)..."
+	"$matlabBin" -batch "run('$(mq "$mfile")')"
+	matStatus=$?
 else
 	echo "No subjects queued; skipping matlab."
 fi
 
-rm -f "$mfile"
+# ---- tally results from the log ----
+nMatFail=0; matFailList=""
+for x in "${queuedSubjs[@]}"; do
+	if ! grep -qxF "+$x" "$failFile"; then
+		((nMatFail++)); matFailList+="  - $x${nl}"
+	fi
+done
+if ((matStatus != 0 && nMatFail > 0)); then
+	if ((matStatus == 126 || matStatus == 127)); then
+		failLog+="MATLAB could not be launched (status $matStatus): $matlabBin${nl}"
+		echo "Error: MATLAB could not be launched (status $matStatus): $matlabBin" >&2
+	else
+		failLog+="MATLAB exited with status $matStatus${nl}"
+	fi
+fi
 
-##########################################################################
 echo ""
 echo "=================================================="
-echo "Run complete: $nqueued subject(s) queued for fitting"
-if ((nfail == 0)); then
+echo "Run complete: $nqueued subject(s) queued, $((nqueued - nMatFail)) fitted, $nMatFail failed in MATLAB, $nfail skipped before MATLAB"
+if ((nfail == 0 && nMatFail == 0)); then
 	echo "No failures."
 	rm -f "$failFile"
 else
-	echo "$nfail failure(s) encountered:"
-	printf '%s' "$failLog"
-
+	exitCode=1
+	if ((nfail > 0)); then echo "Skipped before MATLAB:"; printf '%s' "$failLog"; fi
+	if ((nMatFail > 0)); then echo "Failed in MATLAB (details in log):"; printf '%s' "$matFailList"; fi
 	if ((omitFailLog == 0)); then
 		{
 			echo ""
-			echo "$nfail failure(s)"
+			echo "$nfail skipped, $nMatFail failed in MATLAB"
 			echo ""
 			printf '%s' "$failLog"
 		} >> "$failFile"
 		echo "Failure details written to: $failFile"
 	else
-		rm -f "$failFile"
 		echo "Failure details omitted (omitFailLog=1)"
 	fi
 fi
 echo "=================================================="
+exit $exitCode

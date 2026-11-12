@@ -7,7 +7,8 @@ classdef ASE_Viewer<handle
         fitCoeffsLong = []
         fitCoeffsShort = []
         params = struct;
-        rois = struct;
+        frames = struct;   % per-frame info for aseData: taus, TEs, echo, use, shortInds, longInds
+        roiM = [];         % sparse nReg x nAseVox fractional membership (same as the fit uses)
         roiNames = {}
         roiStats = table;
         window;
@@ -36,76 +37,99 @@ classdef ASE_Viewer<handle
             v = opts.verbose;
             assert(isfile(manifestFile),'ERROR: Manifest file does not exist %s',manifestFile)
             try
-                manifestData_raw = fileread(manifestFile);
-                manifest = jsondecode(manifestData_raw);
+                manifest = jsondecode(fileread(manifestFile));
             catch ME
-                fprintf('ERROR: Unable to read manifest file!');
+                fprintf('ERROR: Unable to read manifest file!\n');
                 rethrow(ME);
             end
-            aseFiles = manifest.sorted_ASE_File;
+            fitOpts = struct;
+            if isfield(manifest,'fitOpts'); fitOpts = manifest.fitOpts; end
+
+            %% ASE data: rebuild exactly as ASE_fitting combined it
+            aseFiles = cellstr(manifest.sorted_ASE_Files);
             if v
                 fprintf('Loading ase data from:\n');
-                for idx = 1:numel(aseFiles)
-                     fprintf("%s\n",aseFiles{idx});
-                end
+                fprintf('\t%s\n',aseFiles{:});
             end
-            [~,obj.aseInfo] = loadNifti(aseFiles{1}); 
-            obj.aseData = combineAseReps(aseFiles);
-            
-            paramFields = {'B0','taus','tauRange','tCrit_buffer','tauPartitions','critTime'};
-            if v;fprintf('Loading parameters...\n');end
-            for idx = 1:numel(paramFields)
-                pField = paramFields{idx};
-                if v;fprintf('\t-%s\n',pField);end
-                obj.params.(pField) = manifest.(pField);
-            end
-            
-            %if computed, found in manifest.paths
-            mapFields = {'R2P','vCBV','OEF'};
+            [~,~,~,hdrInfo] = readASEHeader(manifest.hdr_File);
+            [~,obj.aseInfo] = loadNifti(aseFiles{1});
+            avg = getOr(manifest,'averageReps',getOr(fitOpts,'averageReps',false));
+            if avg; method = 'avg'; else; method = 'stack'; end
+            obj.aseData = single(combineAseReps(aseFiles,hdrInfo,"method",method));
+
+            %% per-frame info
+            nt = size(obj.aseData,4);
+            f = struct;
+            f.taus = manifest.taus_full(:);
+            f.TEs  = manifest.TEs_full(:);
+            f.echo = manifest.frameEcho(:);
+            f.use  = logical(manifest.usePts_full(:));
+            f.shortInds = manifest.shortInds_good(:);
+            f.longInds  = manifest.longInds_good(:);
+            f.nEchos = numel(aseFiles);
+            assert(numel(f.taus)==nt, ...
+                'Manifest lists %d frames but the combined ASE data has %d.',numel(f.taus),nt);
+            obj.frames = f;
+
+            %% parameters
+            obj.params.B0 = manifest.B0;
+            obj.params.critTime = manifest.t_crit;
+            obj.params.tCrit_buffer = getOr(fitOpts,'tCrit_buffer',0);
+            obj.params.tauRange = getOr(fitOpts,'tauRange',[]);
+            obj.params.normErr = logical(getOr(fitOpts,'normErr',true));   % imErr = RMS / mean signal
+
+            %% maps (paths keyed by map name in manifest.paths)
+            paths = struct;
+            if isfield(manifest,'paths') && isstruct(manifest.paths); paths = manifest.paths; end
+            obj.maps = struct;
+            mapFields = {'R2P','vCBV','OEF','R2','imErr','RMS_L','RMS_S'};
             for idx = 1:numel(mapFields)
                 mField = mapFields{idx};
-                if isfield(manifest.paths,mField)
-                    if v;fprintf('Loading Map %s from %s...\n',mField,manifest.paths.(mField));end
-                    obj.maps.(mField) = loadNifti(manifest.paths.(mField));
+                if isfield(paths,mField)
+                    if v;fprintf('Loading map %s from %s...\n',mField,paths.(mField));end
+                    m = loadNifti(paths.(mField),"niiName",mField,'failType','warn');
+                    if ~isempty(m); obj.maps.(mField) = m; end
                 end
-                
             end
-            if isfield(manifest.paths,"coeffsLong")
-               if v;fprintf('Loading long regime fitting coeffs from %s...\n',manifest.paths.coeffsLong);end
-               obj.fitCoeffsLong = loadNifti(manifest.paths.coeffsLong, ...
-                   "niiName",'Coeff Mat Long','failType','warn'); 
-               
+            if isfield(paths,"CoeffsLong")
+               if v;fprintf('Loading long regime fitting coeffs from %s...\n',paths.CoeffsLong);end
+               obj.fitCoeffsLong = loadNifti(paths.CoeffsLong,"niiName",'Coeff Mat Long','failType','warn');
             end
-            if isfield(manifest.paths,"coeffsShort")
-               if v;fprintf('Loading short regime fitting coeffs from %s...\n',manifest.paths.coeffsLong);end
-               obj.fitCoeffsShort = loadNifti(manifest.paths.coeffsShort, ...
-                   "niiName",'Coeff Mat Short','failType','warn');   
+            if isfield(paths,"CoeffsShort")
+               if v;fprintf('Loading short regime fitting coeffs from %s...\n',paths.CoeffsShort);end
+               obj.fitCoeffsShort = loadNifti(paths.CoeffsShort,"niiName",'Coeff Mat Short','failType','warn');
             end
-            if isfield(manifest.paths,"statsCSV")
-                if v;fprintf('Loading ROI stats from %s...\n',manifest.paths.statsCSV);end
+            obj.roiStats = table;
+            if isfield(paths,"ROI_Stats")
+                if v;fprintf('Loading ROI stats from %s...\n',paths.ROI_Stats);end
                 try
-                    obj.roiStats = readtable(manifest.paths.statsCSV);
+                    obj.roiStats = readtable(paths.ROI_Stats,'ReadRowNames',true,'VariableNamingRule','preserve');
                 catch ME
-                    obj.roiStats = table;
                     warning('Unable to load roi stats.\n@: %s\nME: (%s; %s)', ...
-                        manifest.paths.statsCSV,ME.identifier,ME.message);
+                        paths.ROI_Stats,ME.identifier,ME.message);
                 end
             end
 
-            %load ROIs:
-            if isfield(manifest,"ROI_Files")
-                if ~isempty(manifest.ROI_Files)
-                    %cell list was used to load ROI's
-                    [obj.rois,obj.roiNames] = getROIsFromCell(manifest.ROI_Files,"verbose",v);
-                end
+            %% ROIs: fractional membership on the ASE grid, same as the fit
+            obj.roiM = [];  obj.roiNames = {};
+            segFiles = getOr(fitOpts,'segFiles',{});
+            segLUTs  = getOr(fitOpts,'segLUTs',{});
+            if ~isempty(segFiles) && ~isempty(segLUTs)
+                segFiles = cellstr(segFiles);  segLUTs = cellstr(segLUTs);
+                if v; fprintf('Building ROI membership from %d segmentation(s)...\n',numel(segFiles)); end
+                orig_state = warning;
+                if ~getOr(fitOpts,'warnSegIssues',true), warning('off','all'); end
+                [segVol,LUT] = combineSegVols(segFiles,segLUTs,"verbose",false,"keepOverlaps",1);
+                warning(orig_state);
+                segInfo = niftiinfo(segFiles{1});
+                obj.roiM = segToAseMembership(segVol,LUT,segInfo,obj.aseInfo, ...
+                    "maxSampling",[5,5,5],"minFrac",getOr(fitOpts,'minOverlapFrac',0));
+                obj.roiNames = cellstr(LUT.name);
             end
-            if isfield(manifest,"segFiles") && isfield(manifest,"segLUTs")
-                if ~isempty(manifest.segFiles) && ~isempty(manifest.segLUTs)
-                    %segemented volume(s) was/were used to load ROI's
-                    [obj.rois,obj.roiNames] = getROIsFromLUT(manifest.segFiles,manifest.segLUTs,"verbose",v);
-                end
+
+            function val = getOr(st,fld,default)
+                if isstruct(st) && isfield(st,fld) && ~isempty(st.(fld)); val = st.(fld); else; val = default; end
             end
-            
         end
 
         function newFocPoint(obj,src,~)
@@ -113,7 +137,7 @@ classdef ASE_Viewer<handle
             cfg = obj.viewParams.viewCfg;                          % config for the current view
             sz  = size(obj.aseData);
         
-            p = get(src,'CurrentPoint');
+            p = src.CurrentPoint;
             h = min(max(round(p(1,1)),1), sz(cfg.h));   % index along raw dim cfg.h
             v = min(max(round(p(1,2)),1), sz(cfg.v));   % index along raw dim cfg.v
         
@@ -121,8 +145,6 @@ classdef ASE_Viewer<handle
             obj.viewParams.currFoc(cfg.v) = v;                             % cfg.f is left unchanged
         
             obj.syncSpinners;                           % write idx back to the 3 spinners
-            obj.updateWindow;
-            
             obj.updateWindow;
         end
         
@@ -182,6 +204,7 @@ classdef ASE_Viewer<handle
             obj.viewParams.aseCurrdTE = 1;
             obj.viewParams.aseFocCoords = initCoords;
             obj.viewParams.showEx = 1;
+            obj.viewParams.resetLims = true;
             obj.viewParams.selectedROI = [];
             views = viewConfigFromAffine(niftiAffine(obj.aseInfo.raw),"radio");
             views.axial.t = 4;
@@ -209,23 +232,12 @@ classdef ASE_Viewer<handle
             addStyle(volumeDD,uistyle("Interpreter", "latex"));
             obj.uiObjs.volumeDD = volumeDD;
 
-            mapNames = struct();
-            mapNames.R2P = '$R_2$''';
-            mapNames.vCBV = 'vCBV';
-            mapNames.OEF = 'OEF';
-            fNames = fieldnames(mapNames);
+            defs = obj.mapDefs();
             volumes = {'ASE'};
-            for idx = 1:numel(fNames)
-                mName = fNames{idx};
-                if isfield(obj.maps,mName)
-                    volumes{end+1} = mapNames.(mName); %#ok
+            for idx = 1:size(defs,1)
+                if isfield(obj.maps,defs{idx,1})
+                    volumes{end+1} = defs{idx,2}; %#ok
                 end
-            end
-            if ~isempty(obj.fitCoeffsLong)
-                volumes{end+1} = '$RMS_l$';
-            end
-            if ~isempty(obj.fitCoeffsShort)
-                volumes{end+1} = '$RMS_s$';
             end
             obj.uiObjs.volumeDD.Items = volumes;
         
@@ -270,7 +282,7 @@ classdef ASE_Viewer<handle
             sliceSpinner.ValueChangedFcn = @(src,evt) obj.spinnerChg(src,evt);
             obj.uiObjs.sliceSpinner = sliceSpinner;
         
-            dTESpinnerLbl = uilabel(gridNE,'Text','dTE','FontSize',20,'HorizontalAlignment','center','Interpreter','latex','VerticalAlignment','bottom');
+            dTESpinnerLbl = uilabel(gridNE,'Text','Frame','FontSize',20,'HorizontalAlignment','center','Interpreter','latex','VerticalAlignment','bottom');
             dTESpinnerLbl.Layout.Row = 1;
             dTESpinnerLbl.Layout.Column = 2;
             obj.uiObjs.dTESpinnerLbl = dTESpinnerLbl;
@@ -303,7 +315,7 @@ classdef ASE_Viewer<handle
             dim2Spinner.ValueChangedFcn = @(src,evt) obj.spinnerChg(src,evt);
             obj.uiObjs.dim2Spinner = dim2Spinner;
 
-            viewLBLbl = uilabel(gridNE,'Text','View','FontSize',20,'HorizontalAlignment','center','Interpreter','latex','VerticalAlignment','bottom');
+            viewLBlbl = uilabel(gridNE,'Text','View','FontSize',20,'HorizontalAlignment','center','Interpreter','latex','VerticalAlignment','bottom');
             viewLBlbl.Layout.Row = 5;
             viewLBlbl.Layout.Column = [1,2];
             obj.uiObjs.viewLBlbl = viewLBlbl;
@@ -335,6 +347,8 @@ classdef ASE_Viewer<handle
                     obj.viewParams.viewCfg = obj.viewParams.views.coronal;
 
             end
+            obj.viewParams.resetLims = true;   % new view has a different in-plane size
+            obj.syncSpinners;                  % spinners now map to different raw dims
             obj.updateWindow;
         end
 
@@ -363,20 +377,20 @@ classdef ASE_Viewer<handle
 
         function syncSpinners(obj)
             cfg = obj.viewParams.viewCfg;
-            sz = size(obj.aseData);
-            currFoc = obj.viewParams.currFoc;
+            sz = size(obj.aseData);  sz(end+1:4) = 1;
+            currFoc = min(max(round(obj.viewParams.currFoc),1),sz(1:4));
+            obj.viewParams.currFoc = currFoc;
 
-            obj.uiObjs.dim1Spinner.Value = currFoc(cfg.h);
-            obj.uiObjs.dim1Spinner.Limits = [1,sz(cfg.h)];
+            % Limits before Value: the new value may be outside the previous view's limits
+            setSpin(obj.uiObjs.dim1Spinner,  currFoc(cfg.h), sz(cfg.h));
+            setSpin(obj.uiObjs.dim2Spinner,  currFoc(cfg.v), sz(cfg.v));
+            setSpin(obj.uiObjs.sliceSpinner, currFoc(cfg.f), sz(cfg.f));
+            setSpin(obj.uiObjs.dTESpinner,   currFoc(4),     sz(4));
 
-            obj.uiObjs.dim2Spinner.Value = currFoc(cfg.v);
-            obj.uiObjs.dim2Spinner.Limits = [1,sz(cfg.v)];
-
-            obj.uiObjs.sliceSpinner.Value = currFoc(cfg.f);
-            obj.uiObjs.sliceSpinner.Limits = [1,sz(cfg.f)];
-
-            obj.uiObjs.dTESpinner.Value = currFoc(4);
-            obj.uiObjs.dTESpinner.Limits = [1,sz(4)];
+            function setSpin(sp,val,n)
+                sp.Limits = [1,max(n,1+eps)];   % Limits must be increasing (n = 1 edge case)
+                sp.Value = val;
+            end
         end
 
         function toggleSpinners(obj,state)
@@ -406,49 +420,34 @@ classdef ASE_Viewer<handle
             cfg = obj.viewParams.viewCfg;
             currFoc = obj.viewParams.currFoc;
 
-            crossColor = [0,0,0];
             volAx = obj.uiObjs.upperAx;
             
-            switch obj.uiObjs.volumeDD.Value
-                case 'ASE' 
-                    title(volAx,'Post-Processed ASE Volume','Interpreter','latex','FontSize',20);
-                    imgData = obj.getSlice(obj.aseData(:,:,:,currFoc(4)),cfg,currFoc);
-                    %imgData = squeeze(obj.aseData(:,:,currSlice,currdTE));
-                    set(volAx,'Colormap',gray(256));
-                    crossColor = [0.0667,0.4431,0.7451];
-                    clim(volAx,'auto');
-                case '$R_2$'''
-                    title(obj.uiObjs.upperAx,'Computed $R_2^*$ Volume','Interpreter','latex','FontSize',20);
-                    imgData = obj.getSlice(obj.maps.R2P,cfg,currFoc);
-                    set(obj.uiObjs.upperAx,'Colormap',parula(256));
-                    clim(obj.uiObjs.upperAx,[0,15]);
-
-                case 'vCBV'
-                    title(volAx,'Computed vCBV Volume','Interpreter','latex','FontSize',20);
-                    imgData = obj.getSlice(obj.maps.vCBV,cfg,currFoc).*100;
-                    set(volAx,'Colormap',jet(256));
-                    clim(volAx,[0,15]);
-                    crossColor = [1,1,1];
-                case 'OEF'
-                    title(volAx,'Computed OEF Volume','Interpreter','latex','FontSize',20);
-                    imgData = obj.getSlice(obj.maps.OEF,cfg,currFoc).*100;
-                    set(volAx,'Colormap',rgb2cmap([0,0,1;1,1,1;1,0,0],256));
-                    clim(volAx,[0,100]);
-                case '$RMS_s$'
-                    title(volAx,'Computed Short Regime RMS','Interpreter','latex','FontSize',20);
-                    imgData = obj.getSlice(squeeze(obj.fitCoeffsShort(:,:,:,3)),cfg,currFoc);
-                    set(volAx,'Colormap',rgb2cmap([0,1,0;1,0,0],256));
-                    clim(volAx,[0,0.1]);
-                case '$RMS_l$'
-                    title(volAx,'Computed Long Regime RMS','Interpreter','latex','FontSize',20);
-                    imgData = obj.getSlice(squeeze(obj.fitCoeffsLong(:,:,:,3)),cfg,currFoc);
-                    set(volAx,'Colormap',rgb2cmap([0,1,0;1,0,0],256));
-                    clim(volAx,[0,0.1]);
-                otherwise
-                    fprintf("oops\n");
+            volSel = obj.uiObjs.volumeDD.Value;
+            if strcmp(volSel,'ASE')
+                f = obj.frames;
+                title(volAx,sprintf('ASE frame %d (echo %d, $\\tau$ = %0.1f ms)', ...
+                    currFoc(4),f.echo(currFoc(4)),f.taus(currFoc(4))),'Interpreter','latex','FontSize',16);
+                imgData = obj.getSlice(obj.aseData(:,:,:,currFoc(4)),cfg,currFoc);
+                set(volAx,'Colormap',gray(256));
+                crossColor = [0.0667,0.4431,0.7451];
+                clim(volAx,'auto');
+            else
+                defs = obj.mapDefs();
+                d = defs(strcmp(defs(:,2),volSel),:);
+                title(volAx,d{3},'Interpreter','latex','FontSize',20);
+                imgData = obj.getSlice(obj.maps.(d{1}),cfg,currFoc).*d{4};
+                set(volAx,'Colormap',d{5});
+                if isempty(d{6}); clim(volAx,'auto'); else; clim(volAx,d{6}); end
+                crossColor = d{7};
             end
             hold(volAx,'on');
-            set(obj.uiObjs.volImg,'CData',imgData);
+            set(obj.uiObjs.volImg,'CData',imgData,'XData',[1,size(imgData,2)],'YData',[1,size(imgData,1)]);
+            if ~isfield(obj.viewParams,'resetLims') || obj.viewParams.resetLims
+                % fit axes to this view's slice (only on view change, so zoom is kept otherwise)
+                xlim(volAx,[0.5,size(imgData,2)+0.5]);
+                ylim(volAx,[0.5,size(imgData,1)+0.5]);
+                obj.viewParams.resetLims = false;
+            end
             set(volAx, 'XDir', cfg.xdir, 'YDir', cfg.ydir);   % set AFTER imagesc, which resets YDir
             pixdim = obj.aseInfo.PixelDimensions;
             daspect(volAx, [pixdim(cfg.v) pixdim(cfg.h) 1]);
@@ -477,16 +476,24 @@ classdef ASE_Viewer<handle
             obj.uiObjs.codeLbls = {lbl_l,lbl_r,lbl_t,lbl_b};
 
 
+            f = obj.frames;
             roiData = [];
-            roi = [];
+            roiW = [];
             selectedRegion = obj.uiObjs.regionLB.Value;
             if ~strcmp(selectedRegion,'Crosshair')
-                roi = obj.rois{strcmp(obj.roiNames,selectedRegion)};
-                roiInds = find(roi);
-                A = reshape(obj.aseData, [], size(obj.aseData,4));
-                p = sum(A(roiInds,:), 1); %#ok
-                s = sum(roi,'all');
-                roiData = squeeze(p/s);
+                rIdx = find(strcmp(obj.roiNames,selectedRegion),1);
+                w = obj.roiM(rIdx,:);
+                vIdx = find(w);
+                roiW = zeros(size(obj.aseData,1:3),'single');
+                roiW(vIdx) = full(w(vIdx));
+                % weighted mean per frame ignoring invalid values (same as the fit's regionMeans)
+                A = reshape(obj.aseData,[],size(obj.aseData,4));
+                X = double(A(vIdx,:));
+                ok = isfinite(X) & X > 0;
+                X(~ok) = 0;
+                wv = full(w(vIdx));
+                roiData = (wv*X) ./ (wv*double(ok));
+                roiData = roiData(:);
             end
 
             fullFoc = [obj.uiObjs.dim1Spinner.Value,...
@@ -496,7 +503,7 @@ classdef ASE_Viewer<handle
             if ~isempty(obj.uiObjs.roiHandle) && isvalid(obj.uiObjs.roiHandle)
                 delete(obj.uiObjs.roiHandle);
             end
-            if isempty(roiData)
+            if isempty(roiW)
                 redrawCross = false;
                 crosshair = obj.uiObjs.crosshair;
                 if isempty(obj.uiObjs.crosshair)
@@ -516,98 +523,121 @@ classdef ASE_Viewer<handle
                 if ~isempty(obj.uiObjs.crosshair)&&isvalid(obj.uiObjs.crosshair)
                     delete(obj.uiObjs.crosshair);
                 end
-                roi_slice = roi(:,:,fullFoc(3));
-                roi_slice = roi_slice';
-                roi_TC = mat2TC(roi_slice,repmat([1,0,0],[256,1]));
-                obj.uiObjs.roiHandle = imagesc(obj.uiObjs.upperAx,roi_TC);
-                set(obj.uiObjs.roiHandle,'AlphaData',roi_slice.*0.3);
+                roi_slice = double(obj.getSlice(roiW,cfg,currFoc));
+                roi_TC = cat(3,ones(size(roi_slice)),zeros(size(roi_slice)),zeros(size(roi_slice)));
+                obj.uiObjs.roiHandle = image(obj.uiObjs.upperAx,roi_TC,'HitTest','off');
+                set(obj.uiObjs.roiHandle,'AlphaData',roi_slice.*0.5);
             end
             hold(obj.uiObjs.upperAx,'off');
 
             dTE_ax = obj.uiObjs.lowerAx;
             cla(dTE_ax);
-
-            taus = obj.params.taus;
-            tauParts = obj.params.tauPartitions;
-            shortInds = tauParts.minTauIdx:tauParts.critInd_lower;
-            longInds = tauParts.critInd_upper+1:tauParts.maxTauIdx;
-            unusedInds = [1:tauParts.minTauIdx-1,...
-                          tauParts.critInd_lower+1:tauParts.critInd_upper,...
-                          tauParts.maxTauIdx+1:numel(taus)];
-            hold(obj.uiObjs.lowerAx,'on');
+            hold(dTE_ax,'on');
             shortColor = [0.0667,0.4431,0.7451];
             longColor = [0.5216,0.0863,0.8196];
             exColor = [0.8667,0.3294,0];
-            
+            echoMarkers = {'o','s','^','d','v','p'};
+            echoLines = {'--',':','-.','--',':','-.'};
+
+            % fit coefficients: long = [a, (R2,) R2'], short = [b, (k)] in s / s^2 units
             if ~isempty(roiData)
                 focData = log(roiData);
-                %fullFoc(1:3) = 1;
-                roiIdx = find(strcmp(obj.roiNames,selectedRegion));
-                roiRow = obj.roiStats(roiIdx,:);
-                M_S = roiRow.M_S;
-                B_S = roiRow.B_S;
-                RMS_S = roiRow.RMS_S;
-                M_L = roiRow.M_L;
-                B_L = roiRow.B_L;
-                RMS_L = roiRow.RMS_L;
-                R2P = roiRow.R2P;
-                vCBV = roiRow.vCBV;
-                OEF = roiRow.OEF;
+                [BL,BS,R2,R2P,vCBV,OEF] = obj.roiCoeffs(selectedRegion);
                 Signal = roiData(currFoc(4));
+                % fit RMS from the ROI fit; imErr = ROI-weighted mean of the voxel imErr map
+                [rmsL,rmsS] = obj.roiRms(selectedRegion);
+                imErrVal = NaN;
+                if isfield(obj.maps,'imErr')
+                    e = double(obj.maps.imErr(vIdx));  e = e(:).';  ok = isfinite(e);
+                    if any(ok); imErrVal = sum(wv(ok).*e(ok)) / sum(wv(ok)); end
+                end
+                imErrLbl = 'mean imErr';
             else
                 spatIdxCell = num2cell(currFoc(1:3));
-                focData = log(squeeze(obj.aseData(spatIdxCell{:},:)));
-                cMatLong = obj.fitCoeffsLong;
-                B_L = cMatLong(spatIdxCell{:},1);
-                M_L = cMatLong(spatIdxCell{:},2);
-                RMS_L = cMatLong(spatIdxCell{:},3);
-                cMatShort = obj.fitCoeffsShort;
-                B_S = cMatShort(spatIdxCell{:},1);
-                M_S = cMatShort(spatIdxCell{:},2);
-                RMS_S = cMatShort(spatIdxCell{:},3);
-                
-                R2P = obj.maps.R2P(spatIdxCell{:});
-                vCBV = obj.maps.vCBV(spatIdxCell{:});
-                OEF = obj.maps.OEF(spatIdxCell{:});
-                Signal = obj.aseData(spatIdxCell{:},currFoc(4));
+                focData = log(double(squeeze(obj.aseData(spatIdxCell{:},:))));
+                BL = []; BS = [];
+                if ~isempty(obj.fitCoeffsLong);  BL = double(squeeze(obj.fitCoeffsLong(spatIdxCell{:},:))); end
+                if ~isempty(obj.fitCoeffsShort); BS = double(squeeze(obj.fitCoeffsShort(spatIdxCell{:},:))); end
+                R2   = obj.mapVal('R2',spatIdxCell);
+                R2P  = obj.mapVal('R2P',spatIdxCell);
+                vCBV = obj.mapVal('vCBV',spatIdxCell);
+                OEF  = obj.mapVal('OEF',spatIdxCell);
+                Signal = double(obj.aseData(spatIdxCell{:},currFoc(4)));
+                rmsL = obj.mapVal('RMS_L',spatIdxCell);
+                rmsS = obj.mapVal('RMS_S',spatIdxCell);
+                imErrVal = obj.mapVal('imErr',spatIdxCell);
+                imErrLbl = 'imErr';
             end
-            if all(focData<0)
+            focData = focData(:);
+            focData(~isfinite(focData)) = NaN;
+
+            nt = numel(f.taus);
+            isShort = false(nt,1); isShort(f.shortInds) = true;
+            isLong  = false(nt,1); isLong(f.longInds) = true;
+            isShort = isShort & f.use;  isLong = isLong & f.use;
+            isEx = ~(isShort | isLong);
+            usedData = focData(isShort | isLong);
+
+            if all(isnan(usedData))
                 xlim(dTE_ax,[0,1]);
                 ylim(dTE_ax,[0,1]);
-                Signal = NaN;
-                R2P = NaN;
-                vCBV = NaN;
-                OEF = NaN;
+                Signal = NaN; R2 = NaN; R2P = NaN; vCBV = NaN; OEF = NaN;
+                rmsL = NaN; rmsS = NaN; imErrVal = NaN;
                 text(dTE_ax,0.5,0.5,'No Valid Points!','FontSize',18,'HorizontalAlignment','center');
             else
-                lgdHandles = [];
-                lgdHandles(end+1) = scatter(dTE_ax,taus(shortInds),focData(shortInds),'filled','DisplayName','Short Regime','MarkerFaceColor',shortColor);
-                lgdHandles(end+1) = scatter(dTE_ax,taus(longInds),focData(longInds),'filled','DisplayName','Long Regime','MarkerFaceColor',longColor);
-    
-                if obj.viewParams.showEx
-                    lgdHandles(end+1) = scatter(dTE_ax,taus(unusedInds),focData(unusedInds),'Marker','x','DisplayName','Excluded','MarkerEdgeColor',exColor,'LineWidth',2);
+                lgdHandles = gobjects(0);
+                for e = 1:f.nEchos
+                    mk = echoMarkers{mod(e-1,numel(echoMarkers))+1};
+                    ls = echoLines{mod(e-1,numel(echoLines))+1};
+                    inE = f.echo == e;
+                    TEe = f.TEs(find(inE,1))/1000;   % s
+                    sfx = '';
+                    if f.nEchos > 1; sfx = sprintf(' (echo %d)',e); end
+                    m = inE & isShort;
+                    if any(m)
+                        lgdHandles(end+1) = scatter(dTE_ax,f.taus(m),focData(m),36,shortColor,'filled', ...
+                            'Marker',mk,'DisplayName',['Short Regime' sfx]); %#ok
+                    end
+                    m = inE & isLong;
+                    if any(m)
+                        lgdHandles(end+1) = scatter(dTE_ax,f.taus(m),focData(m),36,longColor,'filled', ...
+                            'Marker',mk,'DisplayName',['Long Regime' sfx]); %#ok
+                    end
+                    m = inE & isEx;
+                    if obj.viewParams.showEx && any(m)
+                        lgdHandles(end+1) = scatter(dTE_ax,f.taus(m),focData(m),36,exColor, ...
+                            'Marker','x','LineWidth',2,'DisplayName',['Excluded' sfx]); %#ok
+                    end
+
+                    % fit curves for this echo
+                    [yL,yS] = obj.fitCurves(BL,BS,f.nEchos,TEe);
+                    m = inE & isLong;
+                    if ~isempty(yL) && any(m)
+                        t = linspace(min(f.taus(m)),max(f.taus(m)),100);
+                        lgdHandles(end+1) = plot(dTE_ax,t,yL(t),ls,'Color',longColor, ...
+                            'DisplayName',['Long Regime Fit' sfx]); %#ok
+                    end
+                    m = inE & isShort;
+                    if ~isempty(yS) && any(m)
+                        t = linspace(min(f.taus(m)),max(f.taus(m)),100);
+                        lgdHandles(end+1) = plot(dTE_ax,t,yS(t),ls,'Color',shortColor, ...
+                            'DisplayName',['Short Regime Fit' sfx]); %#ok
+                    end
                 end
-                
-                M_L = M_L/1e3; %s
-                M_S = M_S/1e6;  %s
-                lgdHandles(end+1) = plot(dTE_ax,taus,M_L.*taus+B_L,'--','DisplayName','Long Regime Fit','Color',longColor);
-                lgdHandles(end+1) = plot(dTE_ax,taus(shortInds),M_S.*taus(shortInds).^2+B_S,'--','DisplayName','Short Regime Fit','Color',shortColor);
-    
-                usedData = focData([shortInds,longInds]);
-    
-                yBds = [min(usedData),B_L];
-                yRange = abs(yBds(2)-yBds(1));
+
+                yBds = [min(usedData),max(usedData)];
+                yRange = max(abs(diff(yBds)),eps);
                 padding = 0.1;
                 critTime = obj.params.critTime;
                 critBuffer = obj.params.tCrit_buffer;
-                xlim(dTE_ax,[taus(1),taus(end)]);
-                ylim(dTE_ax,[yBds(1)-yRange*padding,max(yBds(2)+yRange*padding,max(usedData))]);
+                xlim(dTE_ax,[min(f.taus),max(f.taus)]);
+                ylim(dTE_ax,[yBds(1)-yRange*padding,yBds(2)+yRange*padding]);
                 lgdHandles(end+1) = xline(dTE_ax,critTime,'-','1.5x\ $t_{crit}$', ...
                                                  'Interpreter','latex', ...
                                                  'Color','black', ...
                                                  'FontSize',12,...
                                                  'DisplayName',sprintf('1.5x Critical Time (%0.1fms)',critTime));
-                critRange = [critTime-critBuffer,critTime+critBuffer];
+                critRange = [max(0,critTime-critBuffer),critTime+critBuffer];
                 lgdHandles(end+1) = xregion(dTE_ax,critRange, ...
                                                     'LineStyle','--', ...
                                                     'FaceColor',[1,0,0], ...
@@ -615,33 +645,108 @@ classdef ASE_Viewer<handle
                                                     'EdgeAlpha',1, ...
                                                     'FaceAlpha',0.2,...
                                                     'DisplayName',sprintf('Buffer Window (%0.1fms)',2*critBuffer));
-                lgdHandles(end+1) = xline(dTE_ax,taus(currFoc(4)),'-','$\tau_{current}$', ...
+                lgdHandles(end+1) = xline(dTE_ax,f.taus(currFoc(4)),'-','$\tau_{current}$', ...
                                                    'Interpreter','latex', ...
                                                    'Color',[0.2314,0.6667,0.1961], ...
                                                    'FontSize',12,...
-                                                   'DisplayName',sprintf('Current dTE (%0.1fms)',taus(currFoc(4))));
-                legend(dTE_ax,lgdHandles,'Interpreter','latex','Location','northeast');
-                
+                                                   'DisplayName',sprintf('Current frame %d (echo %d, %0.1fms)', ...
+                                                        currFoc(4),f.echo(currFoc(4)),f.taus(currFoc(4))));
+                legend(dTE_ax,lgdHandles,'Interpreter','none','Location','eastoutside');
             end
             hold(dTE_ax,'off');
-            xlabel(dTE_ax,'$2\tau$ [ms]','Interpreter','latex');
+            xlabel(dTE_ax,'$\tau$ (dTE + TE$_e$ - TE$_1$) [ms]','Interpreter','latex');
             ylabel(dTE_ax,'log(S) [a.u.]','Interpreter','latex');
 
-
-
             dTE_ax.Title.FontName = 'FixedWidth';
-            title(dTE_ax,sprintf([' Signal: %-6.1f [a.u.]\n' ...
-                                 '  R2'': %-6.1f [Hz]\n' ...
-                                 'vCBV: %-6.1f [%%]\n' ...
-                                 ' OEF: %-6.1f [%%]'], ...
-                                 Signal,R2P,vCBV*100,OEF*100));
+            % two columns: map values | fit error values (lines padded to equal width so
+            % the centred title keeps the columns aligned)
+            if obj.params.normErr
+                imErrStr = sprintf('%-6.2f [%%]',imErrVal*100);    % normalized: fraction of mean signal
+            else
+                imErrStr = sprintf('%-6.1f [a.u.]',imErrVal);
+            end
+            ttl = splitlines(sprintf([' Signal: %-6.1f [a.u.]    %10s: %-7.4f\n' ...
+                                 '    R2: %-6.1f [Hz]      %10s: %-7.4f\n' ...
+                                 '   R2'': %-6.1f [Hz]      %10s: %s\n' ...
+                                 '  vCBV: %-6.1f [%%]\n' ...
+                                 '   OEF: %-6.1f [%%]'], ...
+                                 Signal,'RMS long',rmsL, ...
+                                 R2,'RMS short',rmsS, ...
+                                 R2P,imErrLbl,imErrStr, ...
+                                 vCBV*100,OEF*100));
+            ttl = char(ttl);
+            ttl(ttl == ' ') = char(160);   % non-breaking spaces: trailing padding isn't trimmed
+            title(dTE_ax,cellstr(ttl));
+            dTE_ax.Title.Interpreter = 'none';
             obj.uiObjs.dim1Spinner.Value = fullFoc(1);
             obj.uiObjs.dim2Spinner.Value = fullFoc(2);
             obj.toggleSpinners("on");
         end
     end
 
+    methods (Access = private)
+        function val = mapVal(obj,name,spatIdxCell)
+            if isfield(obj.maps,name); val = double(obj.maps.(name)(spatIdxCell{:})); else; val = NaN; end
+        end
+
+        function [rmsL,rmsS] = roiRms(obj,regionName)
+            % ROI-fit RMS (log space) from the ROI stats table (NaN if unavailable)
+            rmsL = NaN; rmsS = NaN;
+            T = obj.roiStats;
+            if isempty(T) || ~any(strcmp(T.Properties.RowNames,regionName)); return; end
+            vn = T.Properties.VariableNames;
+            if any(strcmp(vn,'RMS_L')); rmsL = T{regionName,'RMS_L'}; end
+            if any(strcmp(vn,'RMS_S')); rmsS = T{regionName,'RMS_S'}; end
+        end
+
+        function [BL,BS,R2,R2P,vCBV,OEF] = roiCoeffs(obj,regionName)
+            % coefficients/values for one region from the ROI stats table (NaN if unavailable)
+            BL = []; BS = []; R2 = NaN; R2P = NaN; vCBV = NaN; OEF = NaN;
+            T = obj.roiStats;
+            if isempty(T) || ~any(strcmp(T.Properties.RowNames,regionName)); return; end
+            row = T(regionName,:);
+            vn = T.Properties.VariableNames;
+            getv = @(n) row.(n);
+            colsL = vn(startsWith(vn,'B_L_'));  colsS = vn(startsWith(vn,'B_S_'));
+            BL = cellfun(getv,colsL);  BS = cellfun(getv,colsS);
+            if any(strcmp(vn,'R2'));   R2   = row.R2;   end
+            if any(strcmp(vn,'R2P'));  R2P  = row.R2P;  end
+            if any(strcmp(vn,'vCBV')); vCBV = row.vCBV; end
+            if any(strcmp(vn,'OEF'));  OEF  = row.OEF;  end
+        end
+    end
+
     methods (Static)
+        function defs = mapDefs()
+            % {field, dropdown label, title, display scale, colormap, clim ([] = auto), crosshair color}
+            defs = {
+                'R2P',  '$R_2''$',  'Computed $R_2''$ Volume [Hz]',      1,   parula(256), [0,15],  [0,0,0];
+                'vCBV', 'vCBV',     'Computed vCBV Volume [\%]',          100, jet(256),    [0,15],  [1,1,1];
+                'OEF',  'OEF',      'Computed OEF Volume [\%]',           100, rgb2cmap([0,0,1;1,1,1;1,0,0],256), [0,100], [0,0,0];
+                'R2',   '$R_2$',    'Computed $R_2$ Volume [Hz]',         1,   parula(256), [0,30],  [0,0,0];
+                'imErr','imErr',    'Fit Error',                          1,   hot(256),    [],      [0,0.6,1];
+                'RMS_L','$RMS_l$',  'Long Regime Fit RMS (log space)',    1,   rgb2cmap([0,1,0;1,0,0],256), [0,0.1], [0,0,0];
+                'RMS_S','$RMS_s$',  'Short Regime Fit RMS (log space)',   1,   rgb2cmap([0,1,0;1,0,0],256), [0,0.1], [0,0,0];
+            };
+        end
+
+        function [yL,yS] = fitCurves(BL,BS,nEchos,TEe)
+            % log-signal model curves (tau in ms) for one echo, matching fitASERegimes:
+            %   long : ln S = a - R2*TE - R2'*|tau|        (single echo: a - R2'*|tau|)
+            %   short: ln S = b + k*tau^2 - R2*TE          (single echo: b + k*tau^2)
+            yL = []; yS = [];
+            if isempty(BL) || any(isnan(BL)); return; end
+            if nEchos > 1
+                R2 = BL(2); R2P = BL(3); te = R2*TEe;
+            else
+                R2P = BL(2); te = 0;
+            end
+            yL = @(t) BL(1) - te - R2P*abs(t)/1000;
+            if isempty(BS) || isnan(BS(1)); return; end
+            k = 0; if numel(BS) > 1 && ~isnan(BS(2)); k = BS(2); end
+            yS = @(t) BS(1) + k*(t/1000).^2 - te;
+        end
+
         function img = getSlice(vol3d, cfg, idx)
             % idx = [i j k] current raw voxel indices; returns matrix with rows = v, cols = h
             sub = {':',':',':'};
