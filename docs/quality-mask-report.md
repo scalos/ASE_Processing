@@ -387,3 +387,63 @@ ratio. The tolerances are set to that level, and all 10 repo tests pass.
 **Deleted from scratch:** the 2 Phase 4 fit folders and logs. The plan says to "keep both" the
 pre- and post-correction runs. I kept them as the numbers above, in line with the
 nothing-on-disk rule.
+
+---
+
+## Phase 5 — CSF fraction in ASE space
+
+**Changes:**
+- **`asePreProcess.sh`:**
+  - New pipeline key `qualityMaskNames`, default `anat_fs_xvent_mask_al.nii.gz`. It's also a
+    `--set` key and in the config.
+  - The masks are added to the transfer list (deduplicated).
+  - New stage 8, `stage_qualityMasks`:
+    `3dAllineate -1Dmatrix_apply <tformApplyName> -master <baseName> -final linear` produces
+    `<name><segSuffix>.nii.gz` on the ASE grid.
+  - Planning: the stage runs when the output is missing, or on `--regenTransform`, re-registration
+    or re-transfer, like the segmentation transforms.
+- **`aseFit.sh`:**
+  - New key and flag `qualityMaskNames`.
+  - Masks that exist are passed as `'qualityMaskFiles'`. Missing ones only add a warning, so
+    default runs never fail on them.
+- **`runASEFromConfig.m`:** `qualityMaskFiles` is a reserved per-subject option. It's passed
+  through and recorded in `config_resolved.json` (verified).
+- **`ASE_fitting.m`:**
+  - New `opts.qualityMaskFiles`. The geometry must match the ASE data (`isequalNiftiGeometry`,
+    error on mismatch).
+  - The masks are read **only when a quality feature is on**, so the default output can't change.
+  - Writes `_csfFrac`.
+
+**Mask semantics (decision, open question Q4).** `anat_fs_xvent_mask_al` is **not a CSF mask**.
+It is 1 throughout the brain except the ventricles: the mean value is 0 in aseg 4/5/14/15/43/44
+and 1 in WM, cortex, thalamus and aseg 24. So I treat each quality mask as a *tissue* fraction,
+and CSF fraction = 1 − fraction. With several masks, the maximum CSF fraction is used. Outside the
+brain the CSF fraction is 1.
+
+**Runs:**
+- `asePreProcess.sh` (no regen flags) on scratch: only the new stage ran, writing
+  `anat_fs_xvent_mask_al_ase.nii.gz`.
+- Default fit: bit-identical to baseline, even though `qualityMaskFiles` is now passed.
+- `repNoise` fit: writes `_csfFrac`.
+
+**CSF fraction > 0.2 by region** (aseg resampled to the ASE grid with NN):
+
+| region | n | fraction flagged |
+|---|---|---|
+| ventricles (4/43) | 1,496 | 100% |
+| WM (2/41) | 29,398 | 0.3% |
+| cortex | 28,714 | 14.1% (edge partial volume against outside-brain) |
+| thalamus | 914 | 1.6% |
+| aseg "CSF" (24) | 73 | 21.9% |
+| whole brain (mask > 0.9) | 81,335 | 18.6% |
+
+**Notes:**
+- The source mask is float, so the linear resampling gives true fractions. A byte mask (like
+  `anat_fs_brain_al_mask`) would be rounded back to 0/1 by `3dAllineate` unless it's converted
+  first. That matters if you add byte masks to `qualityMaskNames`.
+- Sulcal CSF counts as tissue in this mask, so bit 4 catches ventricles and the brain's outer
+  boundary, not sulci.
+
+**Deleted from scratch:** the 2 fit folders, logs and the prep log. Kept: the new
+`anat_fs_xvent_mask_al_ase.nii.gz` in the scratch session folder, which is an input for later
+phases.

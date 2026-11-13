@@ -9,9 +9,10 @@
 #   5. transfer anatomical/segmentation volumes from transferSrcDir (+orig -> nifti)   [if missing]
 #   6. register ase_base to the anatomical (3dAllineate) and make the inverse matrix   [if missing]
 #   7. transform segmentations into ASE space (nearest neighbor)
+#   8. resample quality masks (qualityMaskNames) onto the ASE grid (linear -> fractions 0..1)
 # Existing outputs are skipped unless regenerated. Regenerating an upstream stage forces its
 # downstream stages (and overwrites). Settings: script defaults < config "pipeline" section < flags.
-# Stages 5-7 are skipped when segNames is empty.
+# Stages 5-8 are skipped when segNames is empty.
 
 scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -47,8 +48,9 @@ transferSrcDir=session_afni_nortc
 transferNames="anat_fs_brain_al.nii.gz,anat_fs_brain_al_mask.nii.gz,anat_fs_xvent_mask_al.nii.gz,anat_fs_bstem_al.nii.gz"
 segNames="anat_fs_aparc_aseg_al.nii.gz,anat_fs_wmparc_al.nii.gz"
 segSuffix="_ase"
+qualityMaskNames="anat_fs_xvent_mask_al.nii.gz"   # resampled to the ASE grid (fraction); empty = none
 
-pipelineKeys="allSubjDir dataList echo1Col echoSpacing nEchos aseSubjDir rawDataDir dcmIndexFile scannerCode commentScript dcm2niixMinFiles dimonOpts rawNii pattern_dicomHdr pattern_dteHdr aseProcName motionParamName hdrFileName volregOpts baseName baseFrame baseAlName regBaseName allineateOpts tformName tformApplyName transferSrcDir transferNames segNames segSuffix"
+pipelineKeys="allSubjDir dataList echo1Col echoSpacing nEchos aseSubjDir rawDataDir dcmIndexFile scannerCode commentScript dcm2niixMinFiles dimonOpts rawNii pattern_dicomHdr pattern_dteHdr aseProcName motionParamName hdrFileName volregOpts baseName baseFrame baseAlName regBaseName allineateOpts tformName tformApplyName transferSrcDir transferNames segNames segSuffix qualityMaskNames"
 
 # regeneration / logging / retry
 regenNifti=0; regenComments=0; regenHdr=0; regenMotion=0
@@ -83,7 +85,7 @@ Regeneration (overwrites; downstream stages are forced too):
   --regenMotion          motion correction only
   --regenTransfer        re-copy anatomical/segmentation files (forces segmentation transforms)
   --regenRegister        re-register ase_base to anatomical (forces segmentation transforms)
-  --regenTransform       segmentation transforms only
+  --regenTransform       segmentation transforms and quality-mask resampling only
 
 Logging / retry:
   --omitFailLog | --retryMostRecent | --retryFromFile <file> | --help
@@ -222,13 +224,15 @@ elif command -v "$commentScript" > /dev/null 2>&1; then
 fi
 
 # segmentation / transfer lists
-segArr=(); transferArr=()
+segArr=(); transferArr=(); qmArr=()
 [[ -n $segNames ]] && IFS=',' read -ra segArr <<< "$segNames"
 [[ -n $transferNames ]] && IFS=',' read -ra transferArr <<< "$transferNames"
+[[ -n $qualityMaskNames ]] && IFS=',' read -ra qmArr <<< "$qualityMaskNames"
 nSeg=${#segArr[@]}
+nQm=${#qmArr[@]}
 xferList=()
 if ((nSeg > 0)); then
-	for name in "${transferArr[@]}" "${segArr[@]}"; do
+	for name in "${transferArr[@]}" "${segArr[@]}" "${qmArr[@]}"; do
 		dup=0
 		for e in "${xferList[@]}"; do [[ $e == "$name" ]] && dup=1; done
 		((dup)) || xferList+=("$name")
@@ -261,7 +265,7 @@ done
 check_subject() {
 	local ei series nii side dte proc mc nraw j k name base idx
 	missingReasons=""; ok=1
-	echoNums=(); doNiiE=(); doSideE=(); doCommE=(); doMotionE=(); xferDo=(); segDo=()
+	echoNums=(); doNiiE=(); doSideE=(); doCommE=(); doMotionE=(); xferDo=(); segDo=(); qmDo=()
 	anyNii=0; anySide=0; anyComm=0; anyMotion=0
 	doRegister=0; doInverse=0; doHdr=0
 
@@ -351,6 +355,16 @@ check_subject() {
 			segDo[k]=0
 			if ((regenTransform == 1 || doRegister == 1)) || [[ ! -e $subjBase/${base}${segSuffix}.nii.gz ]] || ((xferDo[idx] == 1)); then
 				segDo[k]=1
+			fi
+		done
+
+		# quality masks: same matrix, but onto the ASE grid (master = baseName)
+		for ((k = 0; k < nQm; k++)); do
+			name=${qmArr[k]}; base=$(strip_nii "$name")
+			idx=$(xfer_index "$name")
+			qmDo[k]=0
+			if ((regenTransform == 1 || doRegister == 1)) || [[ ! -e $subjBase/${base}${segSuffix}.nii.gz ]] || ((xferDo[idx] == 1)); then
+				qmDo[k]=1
 			fi
 		done
 	fi
@@ -678,6 +692,26 @@ stage_segments() {
 	return 0
 }
 
+# quality masks -> ASE grid with linear interpolation, so the result is a fraction (0-1)
+stage_qualityMasks() {
+	local k qm base out
+	((nSeg > 0 && nQm > 0)) || return 0
+	for ((k = 0; k < nQm; k++)); do
+		((qmDo[k] == 1)) || continue
+		ensure_base || return 1
+		qm=${qmArr[k]}; base=$(strip_nii "$qm"); out=${base}${segSuffix}.nii.gz
+		echo "[$subjID] Resampling $qm -> $out on the ASE grid (linear; matrix: $tformApplyName)"
+		if ! 3dAllineate -1Dmatrix_apply "$tformApplyName" -source "$qm" -master "$baseName" -prefix "$out" -final linear -overwrite; then
+			rm -f "$out"
+			procErr+="  - 3dAllineate (quality mask) failed for $qm${nl}"; return 1
+		fi
+		if [[ ! -e $out ]]; then
+			procErr+="  - expected output not found after 3dAllineate: $out${nl}"; return 1
+		fi
+	done
+	return 0
+}
+
 process_subject() {
 	procErr=""
 	mkdir -p "$subjBase" && cd "$subjBase" || { procErr+="  - cannot create/enter $subjBase${nl}"; return 1; }
@@ -688,6 +722,7 @@ process_subject() {
 	stage_transfer || return 1
 	stage_register || return 1
 	stage_segments || return 1
+	stage_qualityMasks || return 1
 	return 0
 }
 

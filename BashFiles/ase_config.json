@@ -30,6 +30,7 @@
     "segNames": "anat_fs_aparc_aseg_al.nii.gz,anat_fs_wmparc_al.nii.gz",
     "segSuffix": "_ase",
     "segLUTs": "/autofs/space/guasha_004/users/crbc/yen/ase/GM_WM_long.txt",
+    "qualityMaskNames": "anat_fs_xvent_mask_al.nii.gz",
     "fitsSubdir": "fits",
     "outPref": "ase_fit_results",
     "matlabBin": "matlab",

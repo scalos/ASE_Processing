@@ -35,6 +35,8 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         opts.segLUTs = {}    %path to segmentation LUT. Should match all segFiles
         opts.minOverlapFrac = 0.25 %fraction ase voxel must overlap with region to be added to that ROI
         opts.warnSegIssues = true;
+        opts.qualityMaskFiles = {} %tissue-fraction masks on the ASE grid (e.g. brain minus
+                                   %ventricles); CSF fraction = 1 - fraction (see quality.useCSF)
         
         % Fitting constants:
         opts.Hct = 0.42
@@ -147,8 +149,25 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
     nFrames = numel(frameSrc);
     templateHdr = niftiinfo(ase_files{1});
 
-    %% Repetition noise (quality diagnostics), always from the unaveraged data
+    %% CSF fraction from the quality masks (only when quality features are in use)
     qual = struct();
+    anyQuality = q.enabled || q.repNoise || q.zshimEstimate || q.fitExtensions;
+    if ~iscell(opts.qualityMaskFiles); opts.qualityMaskFiles = {opts.qualityMaskFiles}; end
+    opts.qualityMaskFiles = opts.qualityMaskFiles(~cellfun(@isempty, opts.qualityMaskFiles));
+    if anyQuality && ~isempty(opts.qualityMaskFiles)
+        csf = zeros(templateHdr.ImageSize(1:3));
+        for i = 1:numel(opts.qualityMaskFiles)
+            fq = opts.qualityMaskFiles{i};
+            isequalNiftiGeometry({templateHdr, niftiinfo(fq)}, "onMismatch","error");
+            frac = min(max(double(niftiread(fq)),0),1);    % linear resampling -> tissue fraction
+            csf = max(csf, 1 - frac);                       % several masks: worst case
+        end
+        qual.csfFrac = csf;
+        if v; fprintf('Loaded %d quality mask(s); CSF fraction > %.2f in %.1f%% of voxels\n', ...
+                numel(opts.qualityMaskFiles), q.csf_max, 100*mean(csf(:) > q.csf_max)); end
+    end
+
+    %% Repetition noise (quality diagnostics), always from the unaveraged data
     if needNoise
         if v; fprintf('Estimating repetition noise (sigma, SNR) per echo...\n'); end
         baseInds = find(taus_raw(repInds(1,:)) == 0);
@@ -479,7 +498,7 @@ function resolvedPaths = writeQualityMaps(qual, templateHdr, outPref, nEchos, ov
                 'verbose',v, 'overwrite',overwrite, 'mapName',key);
         end
     end
-    single = {'zshimFracLow','vCBV_quad','vCBV_SE','vCBVquad_SE','vCBV_z','R2P_e1','R2P_e2','R2P_Fstat'};
+    single = {'csfFrac','zshimFracLow','vCBV_quad','vCBV_SE','vCBVquad_SE','vCBV_z','R2P_e1','R2P_e2','R2P_Fstat'};
     for i = 1:numel(single)
         nm = single{i};
         if ~isfield(qual,nm) || isempty(qual.(nm)), continue; end

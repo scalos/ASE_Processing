@@ -7,6 +7,7 @@ function runASEFromConfig(B0, hdr_File, sorted_ASE_Files, runOutDir, opts)
 %   opts.cfgFile  : path to config json (optional; empty = MATLAB defaults)
 %   opts.overrides: JSON object string of fit overrides, e.g. '{"Hct":0.4}'
 %   opts.segFiles, opts.segLUTs : cell arrays of paths (may be empty)
+%   opts.qualityMaskFiles : cell array of quality masks on the ASE grid (may be empty)
 %   opts.outPref  : full output prefix (path included)
 %
 % Config values: "Inf", "-Inf", "NaN" (strings) become numbers; null becomes [].
@@ -19,10 +20,11 @@ function runASEFromConfig(B0, hdr_File, sorted_ASE_Files, runOutDir, opts)
         opts.overrides = ''
         opts.segFiles = {}
         opts.segLUTs = {}
+        opts.qualityMaskFiles = {}
         opts.outPref = ''
     end
     assert(~isempty(opts.outPref), 'outPref must be provided.');
-    reserved = {'segFiles','segLUTs','outPref'};
+    reserved = {'segFiles','segLUTs','qualityMaskFiles','outPref'};
 
     % ---- read config ----
     fit = struct();
@@ -54,7 +56,8 @@ function runASEFromConfig(B0, hdr_File, sorted_ASE_Files, runOutDir, opts)
     end
 
     % ---- build name-value list ----
-    nv = {'segFiles', opts.segFiles, 'segLUTs', opts.segLUTs, 'outPref', opts.outPref};
+    nv = {'segFiles', opts.segFiles, 'segLUTs', opts.segLUTs, 'qualityMaskFiles', opts.qualityMaskFiles, ...
+          'outPref', opts.outPref};
     for f = fieldnames(fit)'
         nv(end+1:end+2) = {f{1}, fit.(f{1})}; %#ok<AGROW>
     end
@@ -82,6 +85,7 @@ function writeResolved(runOutDir, B0, hdr_File, aseFiles, opts, fit)
                'aseFiles', {num2cell(aseFiles,2)}, ...
                'segFiles', {opts.segFiles}, ...
                'segLUTs', {opts.segLUTs}, ...
+               'qualityMaskFiles', {opts.qualityMaskFiles}, ...
                'outPref', char(opts.outPref), ...
                'fit', encodeSpecial(fit));
     fid = fopen(fullfile(runOutDir,'config_resolved.json'), 'w');
