@@ -904,7 +904,7 @@ change.
   - If anything reappears under `testData/scratch/qm/bch046_250816/session_ase/fits/` besides
     `20261112_205823`, it's safe to delete.
 - **Tools left outside the repo** (not committed):
-  - `~/.claude/overnight_qm/` holds diagnostic MATLAB scripts and the restart watchdog.
-  - `~/Library/LaunchAgents/com.sam.claude.overnightqm.plist` is the watchdog's launchd agent.
-    It stops on its own after 06:30; afterwards you can remove it with
-    `launchctl unload ~/Library/LaunchAgents/com.sam.claude.overnightqm.plist && rm ~/Library/LaunchAgents/com.sam.claude.overnightqm.plist`.
+  - `~/.claude/overnight_qm/` holds the diagnostic MATLAB scripts (`diag/`), the original-data
+    fingerprint and the restart watchdog's log. Safe to delete.
+  - The launchd restart agent was **unloaded and removed** when the work finished (about 21:37),
+    so no further automatic restarts will happen.
