@@ -8,6 +8,27 @@ summary I would have sent you is written below. Questions that I would have aske
 **Open questions**. Where something was ambiguous I took the conservative option and flagged it,
 rather than guessing silently.
 
+## TL;DR
+
+- **All 10 phases (0–9) are implemented and committed** on `quality-mask`.
+  - Every feature sits behind `fit.quality.*` (or `dBCorr`) and is off by default.
+  - Default outputs are bit-identical to the baseline at every phase.
+  - 14 MATLAB unit tests (`Tests/`) all pass.
+- **Unit tests confirm three estimators:**
+  - The z-shim gradient estimator recovers Gz within 2 µT/m at realistic SNR.
+  - The repetition-noise estimator recovers σ within 3%.
+  - The analytic vCBV SEs match Monte Carlo.
+- **On real data, z-shim (dB) correction matters most.** Brain R2′ drops from 7.5 to 5.3 s⁻¹ and
+  vCBV from 0.14 to 0.10, while OEF barely changes. The cost is about 6% of brain voxels losing
+  their fit (Q1).
+- **Calibration** (one subject, clean deep WM):
+  - Two placeholder criteria don't work as specified. The **R2′ echo F-test** (bit 9) flags
+    64–80% of the brain and biases OEF by +0.09. **k ≥ 0** (bit 1) is noise-dominated.
+  - A calibrated set (|z| > 8.9, |ΔGz| > 12.7 µT/m, SNR < 10, vein > 0.59, with bits 1 and 9
+    off) excludes **3.3% of clean deep WM** and about 43% of the brain.
+  - The excluded voxels cluster at CSF borders and susceptibility regions, not randomly.
+- **Nothing should be turned on by default yet.** 8 open questions are at the end.
+
 ---
 
 ## 0. Pre-flight
@@ -599,3 +620,291 @@ phases.
   copes. Not changed.
 
 **Deleted from scratch:** 4 fit folders, logs and the failure log from the typo test.
+
+---
+
+## Phase 9 — Validation and calibration
+
+**Code change in this phase:** the verbose z-shim summary lines in `ASE_fitting.m` now cover
+only voxels with real signal (echo-1 shim amplitude > 0.2 × p99, which covers 94% of the brain
+mask). Before, background voxels dominated them. They now read e1/e2 median Gz −5.1/−6.6 µT/m,
+which agrees with the brain-mask analysis. Defaults are still bit-identical, and all 14 unit
+tests pass.
+
+### Setup
+
+**Runs:**
+- All criteria on at placeholder thresholds, with and without `dBCorr`.
+- One run per criterion on its own, plus a reference with every criterion off. All use `dBCorr`
+  and stats only.
+- Calibrated "set C" (see below).
+- Everything on with `averageReps=true`, to exercise the other frame layout: it runs, Gz is
+  identical, and the excluded occupancy is about the same (88.0% vs 88.6%).
+
+**Clean deep WM** (the calibration tissue):
+- aseg 2/41 resampled to the ASE grid, eroded with a 3×3×3 cube.
+- CSF fraction = 0 and brain fraction > 0.9.
+- 3,233 voxels.
+- Because **only one subject is available**, the thresholds are calibrated and evaluated on the
+  same data. Expect them to be optimistic.
+
+### 9.2 Thresholds
+
+**Per-bit exclusion at the placeholder thresholds**, as % of voxels:
+
+| bit | criterion | clean deep WM | WM | GM | deep GM | brain |
+|---|---|---|---|---|---|---|
+| 0 | implausible | 1.0 | 12.8 | 22.5 | 21.9 | 19.7 |
+| 1 | quadSign | 5.0 | 25.2 | 34.2 | 18.7 | 35.8 |
+| 2 | vcbvZ (\|z\|>3) | 9.3 | 15.2 | 16.6 | 14.4 | 14.2 |
+| 3 | lowSNR (<10) | 0.0 | 0.1 | 0.8 | 0.5 | 0.9 |
+| 4 | csf (>0.2) | 0.0 | 0.3 | 12.9 | 2.1 | 18.6 |
+| 5 | vein (>0.15) | 6.6 | 19.6 | 30.7 | 39.3 | 29.3 |
+| 6 | zshimEdge | 0.8 | 9.4 | 20.3 | 12.7 | 15.8 |
+| 7 | zshimEcho (>20) | 0.6 | 5.1 | 13.9 | 13.2 | 10.9 |
+| 8 | zshimFrac (>0.3) | 0.6 | 6.4 | 14.8 | 11.8 | 11.4 |
+| 9 | r2pEcho (p<0.01) | **81.1** | 72.1 | 60.3 | 54.0 | 63.8 |
+| — | **kept** | 15.3 | 13.7 | 12.2 | — | 10.4 |
+
+This table uses `dBCorr`. Without correction the vein rate in clean deep WM is 13.9% and
+r2pEcho is 91%.
+
+**Distributions in clean deep WM** (with `dBCorr`):
+- **|vCBV_z|:** p50 0.88, p90 2.98, p95 4.33, p99 **8.87**. It is NaN in 5% (k ≥ 0).
+- **min-echo SNR:** p1 58, p5 77, p50 133.
+- **|Gz_e1 − Gz_e2|:** p50 1.6, p95 4.3, p99 **12.7** µT/m.
+- **R2′ F statistic** (df 1,150): p50 **25**, p99 156. The p-value at p99 is about 0.
+- **vCBV_int:** p50 0.079, p95 0.164, p99 0.594, a heavy tail.
+- **|R2′_e1 − R2′_e2| / R2′:** p50 0.29, p90 0.47, p99 0.88.
+
+**Calibration verdicts.** The rule was a threshold at p99 of clean deep WM, so each criterion
+alone falsely excludes about 1%.
+- **Bit 2 (vcbvZ):** threshold **|z| > 8.9** (7.5 without correction), against the
+  placeholder 3. z is overdispersed in real tissue: robust SD about 1.3, plus a heavy tail.
+- **Bit 7 (zshimEcho):** threshold **|ΔGz| > 12.7 µT/m**, against 20.
+- **Bit 3 (lowSNR):** **can't be calibrated this way.**
+  - Clean WM has no low-SNR voxels. Its p1 (SNR 58) would flag 56% of deep GM, which has
+    naturally lower signal.
+  - SNR < 10 already flags only 0.9% of the brain. **Recommendation: keep 10.** The criterion
+    is nearly inert on this subject.
+- **Bit 9 (r2pEcho):** **the p-value form is unusable.**
+  - F is large everywhere (median 25 in the cleanest tissue). R2′ from echo 1 is consistently
+    about 30% lower than from echo 2: a systematic regime/model effect (Phase 4), not a
+    voxel defect.
+  - A p-test also penalizes high-SNR tissue the most.
+  - The calibrated equivalent (F > 156) flags about 0%.
+  - **Recommendation:** disable it, or redefine it as an effect size (for example the relative
+    echo difference against the clean-WM p99 of 0.88). **Q3.**
+- **Bit 5 (vein):** a fixed 0.15 is inappropriate here, because vCBV_int runs high (clean-WM
+  median 0.08–0.10). p99 of clean WM gives 0.59, which only catches extreme voxels; p95 would
+  be 0.16. **Q5.**
+- **Bit 1 (quadSign):** flags 5% of clean WM and 25–36% of WM and brain, because k is noisy
+  (SE_quad is about 8× SE_int).
+  - It is the largest *sole cause* of false exclusion in clean WM.
+  - **Recommendation:** disable, or flag only k significantly ≥ 0 (k/SE_k > 2). **Q6.**
+
+**Combined false exclusion in clean deep WM** (target < 10%), with `dBCorr`:
+
+| set | clean deep WM | WM | GM | deep GM | brain |
+|---|---|---|---|---|---|
+| A: calibrated z/ΔGz, SNR 10, r2pEcho off, vein 0.15 | 12.3% | 47% | 70% | 68% | 68% |
+| B: A + vein at p99 (0.594) | 7.8% | 38% | 59% | 41% | 60% |
+| **C: B + quadSign off** | **3.3%** | **22%** | **44%** | **32%** | **43%** |
+
+Without correction: A 18.1%, B 6.3%, C 2.8%.
+
+**Set C** meets the target. Its per-bit rates (clean deep WM / brain):
+
+| criterion | clean deep WM | brain |
+|---|---|---|
+| implausible | 1.0% | 19.7% |
+| vcbvZ | 1.0% | 5.8% |
+| lowSNR | 0% | 0.9% |
+| csf | 0% | 18.6% |
+| vein | 1.0% | 4.1% |
+| zshimEdge | 0.8% | 15.8% |
+| zshimEcho | 1.0% | 14.2% |
+| zshimFrac | 0.6% | 11.4% |
+
+Set C config:
+```json
+"quality": {"enabled": true, "useQuadSign": false, "useR2PEcho": false,
+            "vcbvZ_max": 8.9, "snr_min": 10, "zshimEcho_maxDiff": 12.7, "vein_vCBVmax": 0.59}
+```
+with `dBCorr: true`.
+
+### 9.3 Per-ROI selection bias
+
+**Method:** each criterion on its own, with calibrated thresholds, against the reference with
+`dBCorr` on and every criterion off. The numbers are the median across regions [IQR] of the
+change in the ROI-fit values. "lost" = regions that go from finite OEF to NaN.
+
+| run | lost | median excluded | ΔOEF | ΔR2′ | ΔvCBV |
+|---|---|---|---|---|---|
+| *dBCorr vs baseline* | 8 | 0 | +0.012 [+0.002, +0.047] | −2.22 [−5.2, −1.0] | −0.046 [−0.107, −0.018] |
+| implausible | 0 | 0.17 | −0.031 [−0.111, −0.013] | +0.19 | +0.020 |
+| quadSign | 10 | 0.29 | +0.014 | +0.15 | −0.003 |
+| vcbvZ | 0 | 0.05 | −0.011 | +0.10 | +0.007 |
+| lowSNR | 0 | 0.00 | 0.000 | 0.00 | 0.000 |
+| csf | 1 | 0.20 | −0.010 | −0.28 | −0.001 |
+| vein | 14 | 0.01 | 0.000 | −0.01 | 0.000 |
+| zshimEdge | 2 | 0.12 | −0.009 | −0.05 | +0.001 |
+| zshimEcho | 0 | 0.11 | −0.014 | −0.14 | +0.002 |
+| zshimFrac | 0 | 0.08 | −0.011 | −0.02 | +0.004 |
+| **r2pEcho (placeholder)** | **26** | 0.63 | **+0.093** [+0.048, +0.186] | −0.80 | −0.039 |
+| **set C (combined)** | 7 | 0.44 | **−0.031** [−0.108, −0.014] | −0.30 | +0.010 |
+
+**What the table shows:**
+- **r2pEcho** has the largest selection bias, roughly +0.09 OEF. That is another reason to keep
+  it off.
+- **"implausible"** has the next largest, −0.03 OEF. It removes voxels with failed or
+  out-of-range fits, and those are not random with respect to OEF.
+- The z-shim and CSF criteria each move OEF by about 0.01, and lowSNR does nothing.
+- **"vein"** loses 14 regions while excluding only about 1% of occupancy. Removing a small
+  region's few high-vCBV voxels can push its ROI-fit vCBV to ≤ 0, which makes OEF NaN. Worth a
+  look. **Q5.**
+- **Set C** gives OEF for 147 of 160 regions, against 137 with dBCorr alone and 145 at
+  baseline. Median OEF across regions: baseline 0.268, dBCorr 0.276, set C 0.231.
+
+**Example ROIs** (baseline / dBCorr / set C):
+
+| ROI | OEF | R2′ | vCBV | excluded (set C) |
+|---|---|---|---|---|
+| L UnsegmentedWM | 0.308 / 0.377 / 0.256 | 5.92 / 4.33 / 5.71 | 0.089 / 0.053 / 0.103 | 31% |
+| L Thalamus | 0.227 / 0.258 / 0.214 | 9.01 / 5.92 / 5.71 | 0.184 / 0.106 / 0.124 | 34% |
+| L Caudate | 0.370 / **0.686** / 0.290 | 15.1 / 10.2 / 11.2 | 0.189 / 0.069 / 0.179 | 52% |
+| ctx-lh-precuneus | 0.270 / 0.273 / 0.256 | 6.04 / 5.66 / 5.34 | 0.104 / 0.096 / 0.097 | 31% |
+| ctx-lh-lateralorbitofrontal | **0.748** / 0.756 / 0.206 | 26.8 / 19.3 / 14.1 | 0.166 / 0.118 / 0.317 | **94%** |
+| ctx-lh-inferiortemporal | NaN / NaN / 0.186 | 16.3 / 6.8 / 7.2 | 0.000 / 0.000 / 0.181 | **91%** |
+| L Hippocampus | 0.262 / 0.303 / 0.199 | 19.1 / 9.5 / 5.5 | 0.337 / 0.145 / 0.129 | 79% |
+
+Regions over the sinuses and petrous bone (orbitofrontal, inferior temporal, hippocampus) lose
+80–94% of their voxels. Their implausible values (OEF 0.75) become plausible, but they then rest
+on very few voxels. Consider a stricter `minVoxKept`, or reporting `fracExcluded` alongside.
+
+### 9.4 Spatial check
+
+I rendered a montage of 8 axial slices with set C flags coloured by category over the echo-1
+S0, and looked at it. It was then deleted.
+
+**What it showed:**
+- **Z-shim flags (red)** sit in the inferior temporal lobes and the orbitofrontal / gyrus
+  rectus region. Those are the classic air–tissue susceptibility areas next to the mastoids and
+  the frontal sinus.
+- **CSF flags (blue)** trace the ventricles and the cortical surface.
+- **Vein flags (yellow)** are sparse: lateral cerebellum (near the transverse sinus) and one
+  frontal blob near the frontal horn.
+- **Fit/consistency flags (green)** are scattered along the cortical ribbon.
+- **Deep WM is largely clean.**
+- **Unexpected:** a bilateral paracentral **red (z-shim) cluster in the most superior slice**.
+  It could be a slab-edge or slice-profile effect, or the superior sagittal sinus. Worth looking
+  at in the viewer.
+
+**Clustering numbers:**
+- 61% of voxels next to CSF or outside the brain are flagged, against 26% of interior voxels.
+- In-plane neighbours of flagged voxels are 73% flagged, against 43% expected at random and 16%
+  around kept voxels. The flags cluster; they are not random.
+- By slice (inferior → superior), the flagged fraction is 93, 84, 72, 53, … 25–39 in the
+  mid-brain … then 54, 68, 82, 93. It is highest at both slab ends.
+- Category shares of flagged voxels: CSF 44%, z-shim 37%, fit/consistency 16%, vein 4%.
+
+**A visual check in `ASE_Viewer` is still needed.** I drove it in batch mode (Phase 8), but
+only you can judge the overlay by eye.
+
+### 9.5 Summary and recommendation
+
+**Do not turn anything on by default yet.** In order of priority:
+
+1. **The plumbing works:**
+   - Default outputs are bit-identical to baseline at every phase.
+   - All diagnostics have unit tests (14, all passing).
+   - Runtime is unchanged (about 12–16 s per subject).
+   - Peak memory goes from 5.1 GB to about 7.0 GB with everything on.
+2. **Z-shim correction (`dBCorr`) is the most consequential change.**
+   - It brings R2′ down by about 2.2 s⁻¹ and vCBV by about 0.05 per ROI, with OEF about the same
+     (+0.01).
+   - It makes vCBV_quad agree better with vCBV_int, and halves the R2′ echo F statistic.
+   - Cost: it loses fits in about 6% of brain voxels (Q1), and has the ROI-curve subset issue
+     (Q2).
+   - It deserves its own decision before the mask.
+3. **For the mask, set C is a reasonable starting point:**
+   - Calibrated z and ΔGz thresholds, SNR at 10, vein at clean-WM p99.
+   - quadSign and r2pEcho off.
+   - Clean deep WM false exclusion is 3.3%.
+   - It still removes about 43% of brain voxels, mostly CSF borders and susceptibility regions,
+     which is what it should do.
+   - **Validate on more subjects** before trusting the thresholds.
+4. **Redesign, don't just recalibrate, bits 1 and 9** (Q3, Q6).
+
+---
+
+## Open questions
+
+Each of these is a decision I made in your absence (or deliberately left alone). All are easy to
+change.
+
+- **Q1 — Fits lost after dB correction.**
+  - When F < Fmin wipes out every echo-2 long frame in a voxel, the long design loses its TE
+    contrast and the fit becomes NaN. That is about 6% of brain voxels, which then get bit 0.
+  - **Options:**
+    - (a) Keep this (the current behaviour).
+    - (b) In those voxels, fall back to a single-echo long design.
+    - (c) Divide by F but don't NaN frames, relying on bit 8 instead.
+- **Q2 — ROI curves with voxel × frame NaNs.**
+  - `regionMeans` averages each frame over whichever voxels are still finite, so long-τ frames
+    come from a lower-Gz subset than short-τ frames.
+  - **Options:** drop from the ROI any voxel that has a NaN'd used frame (stricter), or keep the
+    per-frame NaNs only for the voxel fits.
+- **Q3 — Bit 9 (R2′ echo consistency).**
+  - The p-value test flags 64–80% of the brain, because echo-1 R2′ is consistently about 30%
+    lower: the slope is still in the transition region (echo-1 long frames start at 1.2 ×
+    t_crit).
+  - **Options:** disable it, switch to an effect size (relative difference > clean-WM p99), or
+    start echo 1's long range later.
+- **Q4 — `anat_fs_xvent_mask_al` semantics.** It is brain-minus-ventricles, so I used
+  CSF = 1 − mask. Should we use a real CSF partial-volume map instead (for example aseg CSF
+  labels plus sulcal CSF)? Bit 4 currently catches ventricles and the outer brain edge, but not
+  sulci.
+- **Q5 — Vein threshold.**
+  - A fixed 0.15 doesn't fit this subject, whose vCBV_int is high overall.
+  - Should it be relative (a percentile of clean WM, or a multiple of the regional median)?
+  - Also, the vein bit alone loses 14 small regions: their ROI vCBV becomes ≤ 0.
+- **Q6 — Bit 1 (k ≥ 0).** k is noisy, so this flags 25–36% of WM and brain. Should it require
+  significance (k/SE_k > 2, from the SEs computed in Phase 4)?
+- **Q7 — Smaller choices:**
+  - σ uses n−1 degrees of freedom.
+  - SNR baseline = dTE = 0 frames.
+  - Bit 3 uses the minimum over echoes.
+  - Noise weighting uses echo-1 SNR².
+  - The dB correction uses each echo's own Gz rather than an echo-averaged Gz.
+  - The bit 7 placeholder was 20 µT/m.
+  - `qualityMaskNames` uses `segSuffix` for its output name.
+- **Q8 — Housekeeping:**
+  - The plan's reasoning documents aren't in `testData/plans/`; only the action plan is.
+  - `testData/scratch/bch046_250816/` predates this session. I left it untouched. Delete it?
+
+## Final checks (2026-11-12 ~21:35)
+
+- **Branch:** `quality-mask`, one commit per phase (Phase 0–9). Nothing merged, pushed or
+  rebased. `main` is untouched.
+- **Original data:** unchanged. The size+mtime fingerprint of all 1,104 files under
+  `testData/bch046_250816`, `datalist_ase`, `GM_WM_long.txt`, the old failure log and `plans/`
+  matches the pre-run snapshot. The md5 of `session_ase/*.json` and `*.gz` matches too.
+- **`testData/scratch/` contents:**
+  - **`qm/`:** the scratch copy of the subject, which holds the regenerated header and the
+    resampled `anat_fs_xvent_mask_al_ase.nii.gz`. Its `fits/` holds **only the Phase 0 baseline**
+    (`20261112_205823`), plus `phase0_run.log`.
+  - **`bch046_250816/`:** the pre-existing folder (Q8).
+  - Per the guardrails, the baseline stays until you sign off. Delete `testData/scratch/qm/`
+    when you're done.
+- **Dropbox note:**
+  - `testData/` is inside Dropbox. Once, a deleted scratch fit folder reappeared, presumably
+    restored by sync; I deleted it again.
+  - The Phase 9 cleanup happened about 21:34.
+  - If anything reappears under `testData/scratch/qm/bch046_250816/session_ase/fits/` besides
+    `20261112_205823`, it's safe to delete.
+- **Tools left outside the repo** (not committed):
+  - `~/.claude/overnight_qm/` holds diagnostic MATLAB scripts and the restart watchdog.
+  - `~/Library/LaunchAgents/com.sam.claude.overnightqm.plist` is the watchdog's launchd agent.
+    It stops on its own after 06:30; afterwards you can remove it with
+    `launchctl unload ~/Library/LaunchAgents/com.sam.claude.overnightqm.plist && rm ~/Library/LaunchAgents/com.sam.claude.overnightqm.plist`.

@@ -260,6 +260,7 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         qual.zshimAmp   = NaN([szV, nEchos]);
         qual.zshimAtten = NaN([szV, nEchos]);
         qual.zshimEdge  = zeros([szV, nEchos]);
+        tDeph = NaN(nEchos,1);
         for e = 1:nEchos
             idx = find(frameEcho == e & ismember(frameSrc, info.zShimInds));
             [~,ord] = sort(frameSrc(idx));  idx = idx(ord);   % same order as info.zMoments
@@ -269,8 +270,18 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
                                  'GzRange', q.zshim_GzRange, 'GzStep', q.zshim_GzStep);
             qual.Gz(:,:,:,e) = o.Gz;          qual.zshimAmp(:,:,:,e)   = o.A;
             qual.zshimAtten(:,:,:,e) = o.atten; qual.zshimEdge(:,:,:,e) = double(o.edge);
-            if v; fprintf('Z-shim echo %d: t_deph=%.1fms, median Gz=%.1f uT/m, %.1f%% edge-flagged\n', ...
-                    e, tD(1), median(o.Gz(:),'omitnan'), 100*mean(o.edge(isfinite(o.Gz))>0)); end
+            tDeph(e) = tD(1);
+        end
+        % summaries over voxels with real signal (echo-1 amplitude > 0.2*p99; background
+        % voxels would otherwise dominate)
+        A1 = qual.zshimAmp(:,:,:,1);
+        sig = A1 > 0.2*prctile(A1(:),99);
+        if v
+            for e = 1:nEchos
+                Ge = qual.Gz(:,:,:,e);  Ee = qual.zshimEdge(:,:,:,e);
+                fprintf('Z-shim echo %d: t_deph=%.1fms, median Gz=%.1f uT/m, %.1f%% edge-flagged (voxels with signal)\n', ...
+                    e, tDeph(e), median(Ge(sig),'omitnan'), 100*mean(Ee(sig)>0));
+            end
         end
         % attenuation per voxel and frame (each echo's frames use that echo's Gz); voxels
         % without a Gz estimate (no signal) are left uncorrected (F = 1)
@@ -292,8 +303,9 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         qual.zshimFracLow = nLow / max(numel(usedLong),1);
         qual.zshimFracLow(all(isnan(qual.Gz),4)) = NaN;
         if v && opts.dBCorr
-            fprintf('Applied z-shim dB correction (Fmin=%.2f); median fraction of long frames excluded: %.3f\n', ...
-                q.zshim_Fmin, median(qual.zshimFracLow(:),'omitnan'));
+            fprintf(['Applied z-shim dB correction (Fmin=%.2f); in voxels with signal, %.1f%% have >=1 ' ...
+                     'long frame excluded, %.1f%% more than zshimFrac_max\n'], q.zshim_Fmin, ...
+                100*mean(qual.zshimFracLow(sig) > 0), 100*mean(qual.zshimFracLow(sig) > q.zshimFrac_max));
         end
     end
 
