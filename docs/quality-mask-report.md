@@ -447,3 +447,42 @@ brain the CSF fraction is 1.
 **Deleted from scratch:** the 2 fit folders, logs and the prep log. Kept: the new
 `anat_fs_xvent_mask_al_ase.nii.gz` in the scratch session folder, which is an input for later
 phases.
+
+---
+
+## Phase 6 — Quality module
+
+**Changes:**
+- **New `CoreMatFiles/computeVoxelQuality.m`:** `[keep, flags, bitInfo]`, with a uint16 bitmask
+  using the plan's bits 0–9.
+  - Each bit has its own `use*` flag and threshold in `quality` (`qualityDefaults.m`).
+  - A disabled criterion never sets its bit.
+  - An enabled criterion whose input is missing (for example, no quality mask) warns
+    (`computeVoxelQuality:missingInput`), is reported as `Available=false` and sets nothing.
+  - `keep` = no bit set.
+- **Interpretation choices (flagged):**
+  - **Bit 0:** raw (unclamped) R2/R2′/vCBV/OEF outside the `physBd_*` bounds, **or NaN fit
+    values** (except OEF, which is NaN by construction where vCBV ≤ 0 or R2′ ≤ 0, cases already
+    caught).
+  - **Bit 1:** `~(vCBV_quad > 0)`, which covers k ≥ 0 because vCBV_quad is NaN there.
+  - **Bit 3:** uses the **lowest SNR over echoes**.
+  - **Bit 6:** either edge bit, in either echo.
+  - Bits 2, 7 and 9 use the placeholder thresholds |z| > 3, |ΔGz| > 20 µT/m and p < 0.01.
+    I picked 20 µT/m because the plan gives no number.
+- **`ASE_fitting.m`:** with `quality.enabled`, it computes `qual.keep`/`qual.flags` from the raw
+  maps and prints the bit table when verbose. **This phase has no effect on outputs** (ROI use is
+  Phase 7, writing is Phase 8).
+- **New `Tests/test_computeVoxelQuality.m`:** 4 tests, and all 18 repo tests pass.
+  - 11 synthetic voxels, each breaking exactly one criterion: each sets exactly its own bit.
+  - Disabling each criterion in turn never sets its bit.
+  - A missing input warns and skips.
+  - A NaN fit sets bit 0.
+
+**Run:** `--fit 'quality={"enabled":true}'` runs end to end, with all inputs available
+(CSF mask, σ, Gz, z, F).
+- **Whole-FOV result:** 6,608 of 483,421 fitted voxels kept.
+- **Not meaningful:** these counts are dominated by background voxels, which have no ROI
+  membership anyway. The brain-restricted per-bit breakdown is in Phase 9, once Phase 8 writes
+  the flags.
+
+**Deleted from scratch:** the Phase 6 fit folder and log.

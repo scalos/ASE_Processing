@@ -354,6 +354,16 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
             end
         end
 
+        %% voxel quality mask (uses raw, unclamped maps)
+        if q.enabled
+            [qual.keep, qual.flags, qual.bitInfo] = computeVoxelQuality(rawMaps, qual, physBds, q);
+            if v
+                fprintf('Voxel quality: %d of %d voxels with a fit kept (whole FOV)\n', ...
+                    nnz(qual.keep & isfinite(rawMaps.vCBV)), nnz(isfinite(rawMaps.vCBV)));
+                disp(qual.bitInfo);
+            end
+        end
+
         C = exp(B_short(:,:,:,1)); %amplitude
         [imErr,~] = computeASEError(ase_sorted,taus_full,TEs_full,rawMaps.R2,rawMaps.R2P,rawMaps.vCBV,C,"normalize",opts.normErr);
 
