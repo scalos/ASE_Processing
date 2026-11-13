@@ -18,7 +18,7 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         opts.tauRange = []; %ms
         opts.tCrit_buffer = 3; %ms
         opts.averageReps = false %whether to average repetitions before fitting 
-        opts.dBCorr = false %Whether to apply db correction. CORRECTION NOT CURRENTLY SUPPORTED!
+        opts.dBCorr = false %Through-slice (z-shim based) dB correction; settings in opts.quality.zshim_*
         opts.tauUsePts = []; %use to restrict tau points used in all fitting operations.  ndTE x nEchos
         opts.physBd_R2 = [0,inf];
         opts.physBd_R2P = [0,inf];
@@ -97,12 +97,23 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
     assert(isequal(size(tauUsePts),[ndTEs,nEchos]), ...
         'tauUsePts must be ndTEs x nEchos.');
 
-    %NOT CURRENTLY SUPPORTED!
-    if opts.dBCorr
-        error('dB correction is unsupported!');
-    else
-        % no dB correction: only frames with zero z-moment can be used
-        tauUsePts(zShim~=0) = 0;
+    % frames with a nonzero z-moment never enter the regime fits (with or without dB
+    % correction); they are only used to estimate the through-slice gradient Gz.
+    tauUsePts(zShim~=0) = 0;
+    needZshim = opts.dBCorr || q.zshimEstimate || ...
+                (q.enabled && (q.useZshimEdge || q.useZshimEcho || q.useZshimFrac));
+    if needZshim && any(isnan(info.SliceThickness_mm))
+        if opts.dBCorr
+            error(['dBCorr requires SliceThickness_mm in the header (%s). ' ...
+                   'Regenerate it with asePreProcess.sh --regenHdr.'], hdr_file);
+        end
+        warning('SliceThickness_mm missing from %s: z-shim gradient estimate skipped.', hdr_file);
+        needZshim = false;
+    end
+    if needZshim && info.nZshimming == 0
+        if opts.dBCorr, error('dBCorr requested but the header lists no z-shim frames.'); end
+        warning('No z-shim frames in %s: z-shim gradient estimate skipped.', hdr_file);
+        needZshim = false;
     end
 
     %% Handle averaging and sort ase data into single volume
@@ -221,6 +232,51 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
                    min(longTimes,[],'omitmissing'),max(longTimes,[],'omitmissing'),longIndsPretty);
     end
     
+    %% Z-shim: through-slice gradient estimate and (optional) correction
+    if needZshim
+        szV = size(ase_sorted,1:3);
+        dz  = info.SliceThickness_mm/1000;                 % m, per echo
+        qual.Gz         = NaN([szV, nEchos]);
+        qual.zshimAmp   = NaN([szV, nEchos]);
+        qual.zshimAtten = NaN([szV, nEchos]);
+        qual.zshimEdge  = zeros([szV, nEchos]);
+        for e = 1:nEchos
+            idx = find(frameEcho == e & ismember(frameSrc, info.zShimInds));
+            [~,ord] = sort(frameSrc(idx));  idx = idx(ord);   % same order as info.zMoments
+            tD = abs(taus_full(idx));
+            assert(all(abs(tD - tD(1)) < 1e-6), 'Echo %d z-shim frames have different dephasing times.', e);
+            o = fitZshimGradient(ase_sorted(:,:,:,idx), info.zMoments(:,e), tD(1)/1000, dz(e), ...
+                                 'GzRange', q.zshim_GzRange, 'GzStep', q.zshim_GzStep);
+            qual.Gz(:,:,:,e) = o.Gz;          qual.zshimAmp(:,:,:,e)   = o.A;
+            qual.zshimAtten(:,:,:,e) = o.atten; qual.zshimEdge(:,:,:,e) = double(o.edge);
+            if v; fprintf('Z-shim echo %d: t_deph=%.1fms, median Gz=%.1f uT/m, %.1f%% edge-flagged\n', ...
+                    e, tD(1), median(o.Gz(:),'omitnan'), 100*mean(o.edge(isfinite(o.Gz))>0)); end
+        end
+        % attenuation per voxel and frame (each echo's frames use that echo's Gz); voxels
+        % without a Gz estimate (no signal) are left uncorrected (F = 1)
+        usedLong = find(longMask & usePts_full);
+        nLow = zeros(szV);
+        for f = 1:nFrames
+            if ~usePts_full(f), continue; end
+            e = frameEcho(f);
+            F = zshimAttenuation(qual.Gz(:,:,:,e), taus_full(f)/1000, dz(e));
+            F(isnan(F)) = 1;
+            low = F < q.zshim_Fmin;
+            if ismember(f, usedLong), nLow = nLow + low; end
+            if opts.dBCorr
+                fr = ase_sorted(:,:,:,f) ./ F;
+                fr(low) = NaN;                             % voxel x frame exclusion
+                ase_sorted(:,:,:,f) = fr;
+            end
+        end
+        qual.zshimFracLow = nLow / max(numel(usedLong),1);
+        qual.zshimFracLow(all(isnan(qual.Gz),4)) = NaN;
+        if v && opts.dBCorr
+            fprintf('Applied z-shim dB correction (Fmin=%.2f); median fraction of long frames excluded: %.3f\n', ...
+                q.zshim_Fmin, median(qual.zshimFracLow(:),'omitnan'));
+        end
+    end
+
     %handle optional further restrictions on fitting points:
     %excluded frames -> NaN (keeps size; fitting ignores NaNs)
     frameMask = ones(1,1,1,nFrames);
@@ -390,7 +446,7 @@ end
 function resolvedPaths = writeQualityMaps(qual, templateHdr, outPref, nEchos, overwrite, v, resolvedPaths)
 % Write per-echo quality diagnostics (4th dim = echo) as <outPref>_<name>_e<k>,
 % and single maps as <outPref>_<name>. Every file gets a manifest entry.
-    perEcho = {'sigma','SNR'};
+    perEcho = {'sigma','SNR','Gz','zshimAmp','zshimAtten','zshimEdge'};
     for i = 1:numel(perEcho)
         nm = perEcho{i};
         if ~isfield(qual,nm) || isempty(qual.(nm)), continue; end
@@ -399,6 +455,13 @@ function resolvedPaths = writeQualityMaps(qual, templateHdr, outPref, nEchos, ov
             resolvedPaths.(key) = writeMap(templateHdr, qual.(nm)(:,:,:,e), sprintf("%s_%s", outPref, key), ...
                 'verbose',v, 'overwrite',overwrite, 'mapName',key);
         end
+    end
+    single = {'zshimFracLow'};
+    for i = 1:numel(single)
+        nm = single{i};
+        if ~isfield(qual,nm) || isempty(qual.(nm)), continue; end
+        resolvedPaths.(nm) = writeMap(templateHdr, qual.(nm), sprintf("%s_%s", outPref, nm), ...
+            'verbose',v, 'overwrite',overwrite, 'mapName',nm);
     end
 end
 

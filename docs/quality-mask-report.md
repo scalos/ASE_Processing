@@ -209,3 +209,104 @@ it is the input for later phases.
   in Phase 9.
 
 **Deleted from scratch:** the 3 Phase 2 fit folders and their logs. The baseline is kept.
+
+---
+
+## Phase 3 — Z-shim gradient estimate and correction
+
+**Changes:**
+- **New `CoreMatFiles/fitZshimGradient.m`:**
+  - Vectorized grid search: one matrix product Y·F gives R_j for all voxels and all 301 grid
+    points.
+  - Parabolic refinement, then the amplitude is recomputed at the refined Gz.
+  - Outputs Gz, A, R, the attenuation ratio y(M=0)/A, and an `edge` bitmask
+    (1 = grid edge, 2 = peak outside the sampled moments).
+  - Uses the unnormalized `sin(x)./x` with `x==0 → 1`, never MATLAB's `sinc`.
+- **New `CoreMatFiles/zshimAttenuation.m`:** F = |sinc(γΔz·Gz·t/2)|.
+- **`ASE_fitting.m`:**
+  - The `dBCorr` error is gone. Frames with nonzero z-moment are now always excluded from the
+    regime fits.
+  - `dBCorr=true` runs the correction: each frame is divided by F, where F uses that frame's own
+    echo's Gz and t = |`taus_full`|.
+  - Where F < `quality.zshim_Fmin`, the voxel–frame value becomes NaN. This is a new voxel × frame
+    exclusion.
+  - Voxels with no Gz estimate (no signal) are left uncorrected (F = 1).
+  - `dBCorr` without `SliceThickness_mm` or without z-shim frames raises an error. The
+    estimate-only path just warns and skips.
+  - `quality.zshimEstimate` alone writes the maps without changing the fit.
+  - New per-echo outputs `_Gz`, `_zshimAmp`, `_zshimAtten` and `_zshimEdge`, plus
+    `_zshimFracLow`: the fraction of the used long frames with F < Fmin, which feeds bit 8. All
+    are in the manifest.
+- **New `Tests/test_fitZshimGradient.m`** (5 tests, all passing; Phase 2 tests still pass):
+  - Gz ∈ {−30, −10, 0, 12.3, 40, 75} µT/m at peak SNR 80, using the real echo-1 moments, 44 ms
+    and 4.8 mm: median and p90 error under 2 µT/m, amplitude within 2%.
+  - Noiseless recovery is exact (to 0.1).
+  - Both edge bits fire.
+  - Background returns NaN.
+  - The attenuation is exactly 0 at the first null of sin(x)/x.
+
+**Runs:**
+- Estimate only: all baseline outputs bit-identical, 9 maps added.
+- `dBCorr=true`: 12.6 s, 6.1 GB.
+
+**Brain-mask diagnostics.** These use a resampled FreeSurfer brain mask (fraction > 0.9,
+81,335 voxels) and aseg WM/GM, made with `3dAllineate` from the existing inverse matrix and kept
+in `testData/scratch/qm/diag/`.
+
+| | e1 | e2 |
+|---|---|---|
+| median Gz in brain (µT/m) | −4.6 | −6.6 |
+| median attenuation y(0)/A | 0.985 | 0.928 |
+| grid-edge / outside-moment flags | 0.1% / 8.3% | 0.7% / 14.3% |
+
+**Model check on the data:**
+- The mean normalized z-shim profile over brain voxels at the largest moment is 0.262 (e1) and
+  0.203 (e2).
+- The |sinc| model with Δz = 4.8 mm predicts 0.26 and 0.21. The rect-profile model and the
+  units are consistent.
+
+**Echo convention check.** I fitted echo 2 under alternative conventions:
+
+| echo 2 convention | median \|Gz₂−Gz₁\| | corr | edge |
+|---|---|---|---|
+| **M₂, t = 76 ms (plan)** | **3.3** | **0.50** | **14%** |
+| M₁+M₂ (cumulative), 76 ms | 7.2 | 0.51 | 13.5% |
+| M₂, t = 44 ms | 10.2 | 0.63 | 10.6% |
+| −M₂ | 26.4 | −0.50 | 14% |
+
+The plan's convention fits best. The **absolute sign of Gz is not identifiable** from a single
+echo (M → −M only flips Gz, with identical residuals), but the relative sign between echoes is.
+That doesn't matter for the correction, because |sinc| is even.
+
+**Effect of correction** (brain medians, baseline → corrected):
+
+| map | baseline | corrected |
+|---|---|---|
+| R2′ (s⁻¹) | 7.54 | **5.26** (WM 6.01 → 4.52) |
+| vCBV | 0.143 | **0.104** |
+| OEF | 0.220 | 0.224 |
+| R2 (s⁻¹) | 12.44 | 12.66 |
+
+R2′ and vCBV fall substantially and OEF is nearly unchanged, which is what you'd expect if
+through-slice dephasing had been inflating R2′ and vCBV together.
+
+**Surprises and concerns:**
+1. **6.1% of brain voxels lose their fit after correction** (R2′ finite: 100% → 93.9%).
+   - 14.6% of brain voxels have at least one long frame below Fmin, and 11.4% have more than 30%.
+   - Echo-2 frames all have t ≥ 32 ms, so in high-Gz voxels the whole of echo 2 is NaN'd. Then
+     the long design [1, −TE, −τ] is rank-deficient (one TE), and `fitMultiRegressor` returns NaN.
+   - Bit 8 is meant to flag exactly these voxels, but they currently show up as missing values
+     instead.
+   - **Open question Q1.**
+2. **ROI path with correction.** `regionMeans` averages each frame over the voxels that are still
+   finite. After the voxel × frame NaNs, long-τ frames are averaged over a different
+   (low-Gz-only) subset of voxels than short-τ frames. That is a selection bias inside the ROI
+   curve. Phase 7's voxel mask helps, because bit-8 voxels are removed entirely. **Open
+   question Q2.**
+3. **Whole-FOV medians are misleading.** Without a brain mask, the run log reported echo-2 median
+   Gz = −20 and 75% edge-flagged, because background voxels dominate. The verbose line is now
+   just informational.
+
+**Deleted from scratch:** the 2 Phase 3 fit folders and logs. Kept:
+`testData/scratch/qm/diag/` (resampled brain mask and aseg), which later diagnostics need. It
+will be deleted at the end.
