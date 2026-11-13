@@ -150,3 +150,62 @@ stage runs. The log confirmed it ran only "Building header".
 
 **Deleted from scratch:** `prepASE_failures_*.txt`. The regenerated scratch header stays, because
 it is the input for later phases.
+
+---
+
+## Phase 2 — Repetition noise
+
+**Changes:**
+- **New `Aux_Mat_Functions/estimateRepNoise.m`:** estimates σ as the residual of the additive
+  rep × point model, with (nSweep−1)(nReps−1) degrees of freedom.
+  - For 2 reps this equals Σ(d − d̄)² / (2(nSweep−1)), where d = rep1 − rep2. That is the plan's
+    formula, except I divide by n−1 rather than n, because the mean drift d̄ has been subtracted.
+    The difference is 2% at n = 45.
+  - For more than 2 reps it pools the per-point variances after removing each rep's offset, as
+    the plan asks.
+  - It also returns S0, the rep-mean signal at the dTE = 0 sweep positions. The SNR map is S0/σ.
+    "Baseline signal" was not defined further in the plan, so I chose the spin-echo frames.
+- **New `Aux_Mat_Functions/qualityDefaults.m`:** the single source of the `quality` block
+  defaults, covering every flag and threshold for Phases 2–9. Everything is off by default,
+  unknown keys raise an error, and partial blocks are filled in.
+- **`CoreMatFiles/ASE_fitting.m`:**
+  - New `opts.quality`.
+  - σ is computed from the unaveraged data. In stacked mode it is sliced from the stack; with
+    `averageReps` each echo file is read again.
+  - Outputs `_sigma_e1/_e2` and `_SNR_e1/_e2`, written by the new `writeQualityMaps` with
+    manifest entries.
+  - σ is needed when any of `quality.repNoise`, `fitExtensions`, `noiseWeighting`, or
+    (`enabled` and `useSNR`) is set.
+- **New `Tests/test_estimateRepNoise.m`:** 4 tests, all passing.
+  - Known σ with rep drift: recovered within 3%.
+  - 3 reps: recovered within 3%.
+  - The 2-rep pooled form matches the plan formula exactly.
+  - A single rep returns NaN with a warning.
+
+**Runs** (scratch, about 12 s and 4.4–5.2 GB each):
+
+| run | result vs baseline |
+|---|---|
+| defaults | all 9 maps and the ROI CSV bit-identical |
+| `--fit 'quality={"repNoise":true}'` | existing outputs bit-identical; adds 4 maps |
+| same + `averageReps=true` | σ bit-identical to the stacked run |
+
+**Numbers:**
+- **Intensity mask:** S0 > 0.2 × p99, a crude stand-in for a brain mask. I used it because
+  ASE-grid brain masks don't exist yet.
+
+| echo | median σ | median SNR | p5–p95 SNR | fraction SNR < 10 |
+|---|---|---|---|---|
+| e1 | 9.5 | 102 | 21–218 | 1.5% |
+| e2 | 8.3 | 77 | 20–156 | 1.9% |
+
+**Surprise:**
+- In the background (S0 < 2% of p99), rep-difference σ is about 2. The Rayleigh estimate from the
+  background mean is about 26. So the background is not thermal-noise-like. It is probably ghost
+  or interpolation structure from Fourier motion correction, or scanner-side filtering.
+- In tissue, σ is about 4–5× the background value. That means the rep-difference σ captures
+  physiological and motion noise, not only thermal noise. That is what we want for the fit
+  uncertainty, but **SNR < 10 will rarely trigger in tissue**, so the threshold needs calibrating
+  in Phase 9.
+
+**Deleted from scratch:** the 3 Phase 2 fit folders and their logs. The baseline is kept.

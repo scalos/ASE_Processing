@@ -27,6 +27,9 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         opts.physBdClipVal = [] %if empty: clip to bound, if not: set to value;
         opts.normErr = true;
 
+        % Voxel-quality options (see qualityDefaults.m; every feature off by default):
+        opts.quality = struct()
+
         % ROI computation options:
         opts.segFiles = {}  %path to segentation file (or files). should match segLUT
         opts.segLUTs = {}    %path to segmentation LUT. Should match all segFiles
@@ -49,6 +52,10 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         opts.verbose = false;
     end
     v = opts.verbose;
+    q = qualityDefaults(opts.quality);
+    opts.quality = q;          % resolved block is recorded in the manifest
+    % which quality diagnostics are needed
+    needNoise = q.repNoise || q.fitExtensions || q.noiseWeighting || (q.enabled && q.useSNR);
 
     %% Load files and verify inputs
     if v; fprintf('Verifying Files...\n');end
@@ -127,6 +134,25 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
     end
     nFrames = numel(frameSrc);
     templateHdr = niftiinfo(ase_files{1});
+
+    %% Repetition noise (quality diagnostics), always from the unaveraged data
+    qual = struct();
+    if needNoise
+        if v; fprintf('Estimating repetition noise (sigma, SNR) per echo...\n'); end
+        baseInds = find(taus_raw(repInds(1,:)) == 0);
+        qual.sigma = NaN([templateHdr.ImageSize(1:3), nEchos]);
+        qual.S0    = NaN([templateHdr.ImageSize(1:3), nEchos]);
+        for e = 1:nEchos
+            if opts.averageReps
+                echoData = niftiread(ase_files{e});              % unaveraged frames of this echo
+            else
+                echoData = aseData_combined(:,:,:,(e-1)*ndTEs + (1:ndTEs));
+            end
+            [qual.sigma(:,:,:,e), qual.S0(:,:,:,e)] = estimateRepNoise(echoData, repInds, 'baseInds', baseInds);
+        end
+        clear echoData
+        qual.SNR = qual.S0 ./ qual.sigma;
+    end
     nt = size(aseData_combined,4);
     assert(nt==nFrames,"Combined ASE data has %d frames but the frame map expects %d.",nt,nFrames);
     %{
@@ -279,6 +305,12 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         end
     end
     
+    %% write quality diagnostic maps
+    if any(contains(opts.writeOpts,'maps')) && ~isempty(fieldnames(qual))
+        overwriteMaps = any(contains(opts.overwriteOpts,'maps'));
+        resolvedPaths = writeQualityMaps(qual, templateHdr, opts.outPref, nEchos, overwriteMaps, v, resolvedPaths);
+    end
+
     if any(contains(opts.writeOpts,'stats')) && ~isempty(opts.segFiles)
         if v; fprintf('Organizing regions...\n'); end
         orig_state = warning;
@@ -354,6 +386,21 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
 end
 
 
+
+function resolvedPaths = writeQualityMaps(qual, templateHdr, outPref, nEchos, overwrite, v, resolvedPaths)
+% Write per-echo quality diagnostics (4th dim = echo) as <outPref>_<name>_e<k>,
+% and single maps as <outPref>_<name>. Every file gets a manifest entry.
+    perEcho = {'sigma','SNR'};
+    for i = 1:numel(perEcho)
+        nm = perEcho{i};
+        if ~isfield(qual,nm) || isempty(qual.(nm)), continue; end
+        for e = 1:nEchos
+            key = sprintf('%s_e%d', nm, e);
+            resolvedPaths.(key) = writeMap(templateHdr, qual.(nm)(:,:,:,e), sprintf("%s_%s", outPref, key), ...
+                'verbose',v, 'overwrite',overwrite, 'mapName',key);
+        end
+    end
+end
 
 function maps = applyPhysBounds(maps, physBds, clipVal)
 % Apply [lo hi] bounds to each field. NaN stays NaN in both modes.
