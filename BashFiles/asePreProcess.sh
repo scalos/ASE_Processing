@@ -474,7 +474,7 @@ build_header() {
 	local out=$1
 	local ei series echoLabel dte side nii nLines ntNii
 	local dteRaw zmRaw maxRaw stepRaw v nu
-	local b0e fe te te_ms dteMs maxMs stepMs zmCsv proc
+	local b0e fe te te_ms dteMs maxMs stepMs zmCsv proc sth sthLine
 	local B0="" freq="" blocks="" block
 	local firstDte="" firstZm=""
 	hdrErr=""
@@ -501,6 +501,14 @@ build_header() {
 			[[ $fe == "$freq" ]] || warnMsg+="  - warning: ImagingFrequency for echo $echoLabel ($fe) differs from echo 1 ($freq)${nl}"
 		fi
 		te_ms=$(awk -v t="$te" 'BEGIN{printf "%.10g", t*1000}')
+		# slice thickness (mm; needed for z-shim correction). Optional: omitted from the header if absent.
+		sth=$(json_num "$side" SliceThickness)
+		sthLine=""
+		if is_num "$sth"; then
+			sthLine=$(printf '\n      "SliceThickness_mm": %s,' "$sth")
+		else
+			warnMsg+="  - warning: SliceThickness not found in $side (z-shim correction will be unavailable)${nl}"
+		fi
 
 		nLines=$(tr -d '\r' < "$dte" | grep -c '_DTE=')
 		if ((nLines == 0)); then hdrErr+="  - no '_DTE=' entries found in $dte${nl}"; return 1; fi
@@ -537,8 +545,8 @@ build_header() {
 			[[ $zmCsv == "$firstZm" ]]  || warnMsg+="  - warning: ZMoment values for echo $echoLabel differ from echo 1${nl}"
 		fi
 
-		block=$(printf '    {\n      "echo": %d,\n      "series": "%s",\n      "EchoTime_ms": %s,\n      "nFrames": %d,\n      "MaxDTE_ms": %s,\n      "StepDTE_ms": %s,\n      "dTE_ms": [%s],\n      "ZMoment": [%s],\n      "file": "%s"\n    }' \
-			"$echoLabel" "$series" "$te_ms" "$nLines" "$maxMs" "$stepMs" "$dteMs" "$zmCsv" "$proc")
+		block=$(printf '    {\n      "echo": %d,\n      "series": "%s",\n      "EchoTime_ms": %s,%s\n      "nFrames": %d,\n      "MaxDTE_ms": %s,\n      "StepDTE_ms": %s,\n      "dTE_ms": [%s],\n      "ZMoment": [%s],\n      "file": "%s"\n    }' \
+			"$echoLabel" "$series" "$te_ms" "$sthLine" "$nLines" "$maxMs" "$stepMs" "$dteMs" "$zmCsv" "$proc")
 		blocks+="${blocks:+,$nl}$block"
 	done
 

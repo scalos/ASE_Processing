@@ -109,3 +109,44 @@ the action plan plus the code.
 
 Kept: `testData/scratch/qm/bch046_250816/session_ase/fits/20261112_205823` (baseline).
 Deleted: nothing.
+
+---
+
+## Phase 1 — Header metadata
+
+**Changes:**
+- `BashFiles/asePreProcess.sh`, `build_header`: reads `SliceThickness` from each echo's dcm2niix
+  sidecar using `json_num`, and writes `"SliceThickness_mm"` into each echo block, right after
+  `EchoTime_ms`. If the value is missing, the field is left out and a warning is added; this is
+  not an error.
+- `Aux_Mat_Functions/readASEHeader.m`: new fields `info.zShimInds` (trailing frame indices),
+  `info.zMoments` (nZshim × nEchos, Tms/m × 1e-3 → T·s/m) and `info.SliceThickness_mm`
+  (nEchos × 1, NaN if absent).
+- `readASEHeader.m` also gets a small robustness fix. If the echo blocks have different optional
+  fields, `jsondecode` returns a cell and `[e{:}]` failed. Missing fields are now padded.
+- The "error only when z-shim correction is enabled" check is enforced in `ASE_fitting.m` in
+  Phase 3.
+
+**Ran:** `asePreProcess.sh --allSubjDir testData/scratch/qm --singleSubjID bch046_250816 --regenHdr`
+(scratch only). Before running, I checked that with the existing outputs present only the header
+stage runs. The log confirmed it ran only "Building header".
+
+**Checks:**
+- **Header diff:** a `jq` diff of the header before and after, ignoring `created`, shows exactly
+  two added lines, `"SliceThickness_mm": 4.8` for each echo.
+- **MATLAB values:** `SliceThickness_mm = [4.8 4.8]`, `zShimInds = 91:98`.
+- **zMoments:** echo 1 = [3.819 3.055 2.291 1.527 0.763 0 −0.763 −1.527]·1e-6 T·s/m;
+  echo 2 = [6.596 … −2.638]·1e-6.
+- **Old header** (no field): `[NaN NaN]`, no error.
+- **Mixed header** (field on echo 1 only): `[4.8 NaN]`, no error. Before the fix, this case
+  crashed.
+
+**Surprises:**
+- The pre-existing warning "ZMoment values for echo 2 differ from echo 1" is expected: echo 2's
+  shim moments are larger by about 76/44, consistent with a longer dephasing time. Phase 3 relies
+  on this.
+- The zero-moment shim frame is the 6th of 8, so the sampled moment range is asymmetric
+  (−1.5 to +3.8 µT·s/m for echo 1).
+
+**Deleted from scratch:** `prepASE_failures_*.txt`. The regenerated scratch header stays, because
+it is the input for later phases.
