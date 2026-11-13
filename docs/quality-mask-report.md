@@ -486,3 +486,68 @@ phases.
   the flags.
 
 **Deleted from scratch:** the Phase 6 fit folder and log.
+
+---
+
+## Phase 7 — ROI integration
+
+**Changes** (all in `ASE_fitting.m`):
+- **Forced voxel fit:** with `stats` requested and `quality.enabled`, the voxelwise fit always
+  runs. Maps and coeffs are still written only if requested.
+- **Hard exclusion:** before `regionMeans`, `M = M .* keep(:)'`.
+- **Noise weighting** (`quality.noiseWeighting`, default off): M is also multiplied by the
+  echo-1 SNR² (≈ S²/σ², i.e. 1/var(log S)), normalized by its median over kept voxels.
+  - The plan didn't say which echo or frame provides S and σ, so I used the baseline (dTE = 0)
+    signal of echo 1.
+- **`minVoxKept`:** regions with fewer kept effective voxels than `quality.minVoxKept` (5) get
+  NaN.
+- **New ROI columns** (only when quality is enabled; the default CSV is unchanged):
+  - `nVox_kept` and `fracExcluded`, both occupancy-weighted.
+  - `fracExcl_b<k>_<name>` for every enabled bit. Bits overlap, so they don't sum to the total.
+  - `OEF_med`, `R2P_med`, `vCBV_med`, `R2_med`: medians of the raw voxel maps over each region's
+    kept voxels.
+
+**Runs and checks:**
+- **Default:** maps and ROI CSV bit-identical to baseline.
+- **`quality.enabled`, all `writeOpts`:** 15.7 s, 6.9 GB.
+- **`quality.enabled` with `writeOpts=["stats"]`:** only the CSV, manifest and config are
+  written, and the ROI table is **identical** to the full run. This confirms the forced voxel
+  fit.
+- **Voxel-median vs ROI-fit consistency** over kept voxels (medians across regions):
+
+| | voxel median | ROI fit |
+|---|---|---|
+| OEF | 0.322 | 0.334 |
+| R2′ | 4.58 | 4.78 |
+| vCBV | 0.069 | 0.066 |
+
+  These agree well. Mean-signal fitting and voxel medians give similar answers once the bad
+  voxels are gone.
+- **Noise weighting vs occupancy weights** (111 regions): median |ΔOEF| 0.007, |ΔR2′| 0.25,
+  |ΔvCBV| 0.003. That's a small effect, so it stays off as planned.
+
+**Results with every criterion at its placeholder threshold** (no dBCorr), for illustration only:
+- **91.4% of ROI occupancy excluded.** 49 regions fall below `minVoxKept`, against 15 NaN-OEF
+  regions at baseline.
+- **Per-bit median excluded fraction per region:**
+
+| bit | criterion | median fraction |
+|---|---|---|
+| 9 | r2pEcho | **0.80** |
+| 5 | vein | 0.42 |
+| 4 | csf | 0.20 |
+| 1 | quadSign | 0.17 |
+| 2 | vcbvZ | 0.17 |
+| 6 | zshimEdge | 0.12 |
+| 0 | implausible | 0.11 |
+| 8 | zshimFrac | 0.08 |
+| 7 | zshimEcho | 0.07 |
+| 3 | lowSNR | 0.00 |
+
+- **Shift across the 107 regions with values in both runs:** OEF 0.263 → 0.334, R2′ 7.42 → 4.78,
+  vCBV 0.125 → 0.066.
+- **These are not results.** They show why the defaults must stay off until Phase 9. Bit 9 and
+  the vein threshold dominate, and the vein bit uses vCBV that hasn't been through z-shim
+  correction.
+
+**Deleted from scratch:** the 4 Phase 7 fit folders and logs.

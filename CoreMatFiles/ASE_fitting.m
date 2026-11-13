@@ -322,8 +322,10 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
                      "R2P",opts.physBd_R2P,...
                      "vCBV",opts.physBd_vCBV,...
                      "OEF",opts.physBd_OEF);
-    if any(contains(opts.writeOpts,{'maps','coeffs'}))
-        %If either maps or fit coeffs are asked for, do global fits
+    wantStats = any(contains(opts.writeOpts,'stats')) && ~isempty(opts.segFiles);
+    if any(contains(opts.writeOpts,{'maps','coeffs'})) || (q.enabled && wantStats)
+        %If either maps or fit coeffs are asked for, do global fits.
+        %The voxel quality mask also needs them, so they always run when it is applied to stats.
         fitRes = fitASERegimes(ase_long, ase_short, taus_long, TEs_long, taus_short, TEs_short, nEchos, ...
                     (4/3)*pi*gamma*dChi_0*Hct*B0, []);
         B_long = fitRes.BL;
@@ -430,6 +432,23 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         nVoxReg = full(sum(M,2));            % effective voxel count (weighted)
         % remove the size-equality assert and the buildMembership call
         nReg = height(LUT);
+
+        % ---- voxel quality: hard exclusion (and optional noise weighting) ----
+        useQ = q.enabled && isfield(qual,'keep');
+        if useQ
+            M0 = M;                                            % occupancy before exclusion
+            M  = M .* double(qual.keep(:).');
+            nVoxKept = full(sum(M,2));
+            if q.noiseWeighting
+                % weight ~ 1/var(log S) = S^2/sigma^2 (echo-1 SNR^2); scaled so a region's
+                % total weight stays comparable. Off by default until compared.
+                w = qual.SNR(:,:,:,1).^2;  w(~isfinite(w)) = 0;
+                M = M .* (w(:).' / median(w(qual.keep & w > 0)));
+            end
+            lowKept = nVoxKept < q.minVoxKept;
+            if v; fprintf('Quality mask: %.1f%% of ROI occupancy excluded; %d region(s) below minVoxKept=%g\n', ...
+                    100*(1 - sum(nVoxKept)/sum(nVoxReg)), nnz(lowKept & nVoxReg > 0), q.minVoxKept); end
+        end
         
     
         if v; fprintf('Averaging signal and fitting %d regions...\n',nReg); end
@@ -443,6 +462,7 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         roiRaw = struct('R2',roi.R2,'R2P',roi.R2P,'vCBV',roi.vCBV,'OEF',roi.OEF);
         roiBd  = applyPhysBounds(roiRaw, physBds, opts.physBdClipVal);
         nonEmpty = nVoxReg > 0;                              % regions with no voxels -> NaN
+        if useQ, nonEmpty = nonEmpty & ~lowKept; end         % too few kept voxels -> NaN
         for f = fieldnames(roiBd)'
             roiBd.(f{1})(~nonEmpty) = NaN;  roiRaw.(f{1})(~nonEmpty) = NaN;
         end
@@ -457,6 +477,9 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
             for f = {'OEF','R2P','vCBV','R2'}
                 roiData.([f{1} '_raw']) = roiRaw.(f{1})(:);
             end
+        end
+        if useQ
+            roiData = addQualityColumns(roiData, M0, nVoxReg, nVoxKept, qual, rawMaps);
         end
     
         overwriteStats = any(contains(opts.overwriteOpts,'stats'));
@@ -494,6 +517,30 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
 end
 
 
+
+function roiData = addQualityColumns(roiData, M0, nVoxReg, nVoxKept, qual, rawMaps)
+% ROI-table columns describing the voxel exclusion: kept occupancy, excluded fraction (total
+% and per criterion bit; bits overlap, so they need not sum to the total), and medians of the
+% raw voxel maps over the kept voxels of each region.
+    roiData.nVox_kept    = nVoxKept;
+    roiData.fracExcluded = 1 - nVoxKept ./ nVoxReg;
+    bi = qual.bitInfo;
+    for i = 1:height(bi)
+        if ~bi.Enabled(i), continue; end
+        hit = double(bitand(qual.flags(:), uint16(2^bi.Bit(i))) > 0).';
+        roiData.(sprintf('fracExcl_b%d_%s', bi.Bit(i), bi.Name{i})) = full(sum(M0 .* hit, 2)) ./ nVoxReg;
+    end
+    keepIdx = find(qual.keep(:));
+    Mk = M0(:, keepIdx) > 0;                                % kept members of each region
+    for f = {'OEF','R2P','vCBV','R2'}
+        x = rawMaps.(f{1})(keepIdx);
+        med = NaN(size(Mk,1),1);
+        for r = 1:size(Mk,1)
+            med(r) = median(x(Mk(r,:)), 'omitnan');
+        end
+        roiData.([f{1} '_med']) = med;
+    end
+end
 
 function resolvedPaths = writeQualityMaps(qual, templateHdr, outPref, nEchos, overwrite, v, resolvedPaths)
 % Write per-echo quality diagnostics (4th dim = echo) as <outPref>_<name>_e<k>,
