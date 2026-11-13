@@ -545,6 +545,10 @@ end
 function resolvedPaths = writeQualityMaps(qual, templateHdr, outPref, nEchos, overwrite, v, resolvedPaths)
 % Write per-echo quality diagnostics (4th dim = echo) as <outPref>_<name>_e<k>,
 % and single maps as <outPref>_<name>. Every file gets a manifest entry.
+    if isfield(qual,'keep')
+        qual.qualityMask  = double(qual.keep);     % 1 = kept
+        qual.qualityFlags = double(qual.flags);    % uint16 bitmask, exact in single precision
+    end
     perEcho = {'sigma','SNR','Gz','zshimAmp','zshimAtten','zshimEdge'};
     for i = 1:numel(perEcho)
         nm = perEcho{i};
@@ -555,7 +559,7 @@ function resolvedPaths = writeQualityMaps(qual, templateHdr, outPref, nEchos, ov
                 'verbose',v, 'overwrite',overwrite, 'mapName',key);
         end
     end
-    single = {'csfFrac','zshimFracLow','vCBV_quad','vCBV_SE','vCBVquad_SE','vCBV_z','R2P_e1','R2P_e2','R2P_Fstat'};
+    single = {'qualityMask','qualityFlags','csfFrac','zshimFracLow','vCBV_quad','vCBV_SE','vCBVquad_SE','vCBV_z','R2P_e1','R2P_e2','R2P_Fstat'};
     for i = 1:numel(single)
         nm = single{i};
         if ~isfield(qual,nm) || isempty(qual.(nm)), continue; end

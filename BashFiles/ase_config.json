@@ -57,6 +57,34 @@
     "writeOpts": ["maps", "coeffs", "stats"],
     "overwriteOpts": ["maps", "coeffs", "stats"],
     "writeRawMaps": false,
-    "verbose": true
+    "verbose": true,
+    "quality": {
+      "enabled": false,
+      "repNoise": false,
+      "zshimEstimate": false,
+      "fitExtensions": false,
+      "zshim_GzRange": [-150, 150],
+      "zshim_GzStep": 1,
+      "zshim_Fmin": 0.5,
+      "noiseWeighting": false,
+      "minVoxKept": 5,
+      "useBounds": true,
+      "useQuadSign": true,
+      "useVcbvZ": true,
+      "vcbvZ_max": 3,
+      "useSNR": true,
+      "snr_min": 10,
+      "useCSF": true,
+      "csf_max": 0.2,
+      "useVein": true,
+      "vein_vCBVmax": 0.15,
+      "useZshimEdge": true,
+      "useZshimEcho": true,
+      "zshimEcho_maxDiff": 20,
+      "useZshimFrac": true,
+      "zshimFrac_max": 0.3,
+      "useR2PEcho": true,
+      "r2pEcho_pMax": 0.01
+    }
   }
 }

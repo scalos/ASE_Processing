@@ -11,6 +11,8 @@ function runASEFromConfig(B0, hdr_File, sorted_ASE_Files, runOutDir, opts)
 %   opts.outPref  : full output prefix (path included)
 %
 % Config values: "Inf", "-Inf", "NaN" (strings) become numbers; null becomes [].
+% Overrides of nested blocks (e.g. --fit 'quality={"enabled":true}') are merged into the
+% config's block key by key rather than replacing it.
     arguments
         B0 (1,1) double
         hdr_File
@@ -44,11 +46,22 @@ function runASEFromConfig(B0, hdr_File, sorted_ASE_Files, runOutDir, opts)
             error('Could not parse --fit overrides as JSON (%s): %s', opts.overrides, ME.message);
         end
         for f = fieldnames(ov)'
-            fit.(f{1}) = ov.(f{1});
+            if isfield(fit, f{1}) && isstruct(fit.(f{1})) && isstruct(ov.(f{1}))
+                % nested blocks (e.g. "quality") are merged key by key, so an override
+                % changes only the keys it names
+                for g = fieldnames(ov.(f{1}))'
+                    fit.(f{1}).(g{1}) = ov.(f{1}).(g{1});
+                end
+            else
+                fit.(f{1}) = ov.(f{1});
+            end
         end
     end
 
     fit = convertSpecial(fit);
+    if isfield(fit, 'quality')
+        fit.quality = qualityDefaults(fit.quality);   % validate keys; record the full block
+    end
 
     bad = intersect(fieldnames(fit), reserved);
     if ~isempty(bad)

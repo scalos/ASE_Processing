@@ -82,11 +82,12 @@ classdef ASE_Viewer<handle
             paths = struct;
             if isfield(manifest,'paths') && isstruct(manifest.paths); paths = manifest.paths; end
             obj.maps = struct;
-            mapFields = {'R2P','vCBV','OEF','R2','imErr','RMS_L','RMS_S'};
+            defs = ASE_Viewer.mapDefs();
+            mapFields = defs(:,1).';            % every displayable map present in the manifest
             for idx = 1:numel(mapFields)
                 mField = mapFields{idx};
                 if isfield(paths,mField)
-                    if v;fprintf('Loading map %s from %s...\n',mField,paths.(mField));end
+                    if v && isfield(paths,mField);fprintf('Loading map %s from %s...\n',mField,paths.(mField));end
                     m = loadNifti(paths.(mField),"niiName",mField,'failType','warn');
                     if ~isempty(m); obj.maps.(mField) = m; end
                 end
@@ -479,10 +480,21 @@ classdef ASE_Viewer<handle
             f = obj.frames;
             roiData = [];
             roiW = [];
+            roiEx = [];
             selectedRegion = obj.uiObjs.regionLB.Value;
             if ~strcmp(selectedRegion,'Crosshair')
                 rIdx = find(strcmp(obj.roiNames,selectedRegion),1);
                 w = obj.roiM(rIdx,:);
+                % voxel quality mask (if the fit used one): excluded voxels are drawn in a
+                % different colour and left out of the ROI curve, as in the fit
+                roiEx = [];
+                if isfield(obj.maps,'qualityMask')
+                    keepV = obj.maps.qualityMask(:).' > 0;
+                    exIdx = find(w & ~keepV);
+                    roiEx = zeros(size(obj.aseData,1:3),'single');
+                    roiEx(exIdx) = full(w(exIdx));
+                    w = w .* keepV;
+                end
                 vIdx = find(w);
                 roiW = zeros(size(obj.aseData,1:3),'single');
                 roiW(vIdx) = full(w(vIdx));
@@ -495,6 +507,10 @@ classdef ASE_Viewer<handle
                 roiData = (wv*X) ./ (wv*double(ok));
                 roiData = roiData(:);
             end
+            if isfield(obj.uiObjs,'roiExHandle') && ~isempty(obj.uiObjs.roiExHandle) && isvalid(obj.uiObjs.roiExHandle)
+                delete(obj.uiObjs.roiExHandle);
+            end
+            obj.uiObjs.roiExHandle = gobjects(0);
 
             fullFoc = [obj.uiObjs.dim1Spinner.Value,...
                        obj.uiObjs.dim2Spinner.Value,...
@@ -527,6 +543,12 @@ classdef ASE_Viewer<handle
                 roi_TC = cat(3,ones(size(roi_slice)),zeros(size(roi_slice)),zeros(size(roi_slice)));
                 obj.uiObjs.roiHandle = image(obj.uiObjs.upperAx,roi_TC,'HitTest','off');
                 set(obj.uiObjs.roiHandle,'AlphaData',roi_slice.*0.5);
+                if ~isempty(roiEx)
+                    ex_slice = double(obj.getSlice(roiEx,cfg,currFoc));
+                    ex_TC = cat(3,zeros(size(ex_slice)),ones(size(ex_slice)),ones(size(ex_slice)));   % cyan
+                    obj.uiObjs.roiExHandle = image(obj.uiObjs.upperAx,ex_TC,'HitTest','off');
+                    set(obj.uiObjs.roiExHandle,'AlphaData',ex_slice.*0.6);
+                end
             end
             hold(obj.uiObjs.upperAx,'off');
 
@@ -727,6 +749,22 @@ classdef ASE_Viewer<handle
                 'imErr','imErr',    'Fit Error',                          1,   hot(256),    [],      [0,0.6,1];
                 'RMS_L','$RMS_l$',  'Long Regime Fit RMS (log space)',    1,   rgb2cmap([0,1,0;1,0,0],256), [0,0.1], [0,0,0];
                 'RMS_S','$RMS_s$',  'Short Regime Fit RMS (log space)',   1,   rgb2cmap([0,1,0;1,0,0],256), [0,0.1], [0,0,0];
+                % voxel-quality outputs (present only when quality features were enabled)
+                'qualityMask', 'Quality mask', 'Voxel kept (1) / excluded (0)',          1, gray(256),   [0,1],    [1,0,0];
+                'qualityFlags','Quality flags','Quality bit flags (see computeVoxelQuality)', 1, lines(256), [0,1023], [1,1,1];
+                'vCBV_quad',   'vCBV (quad)',  'vCBV from short-regime curvature [\%]', 100, jet(256),    [0,15],   [1,1,1];
+                'vCBV_z',      'vCBV z',       'z of vCBV$_{int}$ $-$ vCBV$_{quad}$',     1, rgb2cmap([0,0,1;1,1,1;1,0,0],256), [-5,5], [0,0,0];
+                'R2P_e1',      '$R_2''$ e1',   'Echo-1 $R_2''$ [Hz]',                     1, parula(256), [0,15],   [0,0,0];
+                'R2P_e2',      '$R_2''$ e2',   'Echo-2 $R_2''$ [Hz]',                     1, parula(256), [0,15],   [0,0,0];
+                'R2P_Fstat',   '$R_2''$ F',    'Per-echo $R_2''$ F statistic',            1, hot(256),    [0,50],   [0,0.6,1];
+                'Gz_e1',       '$G_z$ e1',     'Through-slice gradient, echo 1 [$\mu$T/m]', 1, rgb2cmap([0,0,1;1,1,1;1,0,0],256), [-100,100], [0,0,0];
+                'Gz_e2',       '$G_z$ e2',     'Through-slice gradient, echo 2 [$\mu$T/m]', 1, rgb2cmap([0,0,1;1,1,1;1,0,0],256), [-100,100], [0,0,0];
+                'zshimFracLow','Z-shim low F', 'Fraction of long frames with $F<F_{min}$', 1, hot(256),    [0,1],    [0,0.6,1];
+                'sigma_e1',    '$\sigma$ e1', 'Repetition noise, echo 1',                1, hot(256),    [],       [0,0.6,1];
+                'sigma_e2',    '$\sigma$ e2', 'Repetition noise, echo 2',                1, hot(256),    [],       [0,0.6,1];
+                'SNR_e1',      'SNR e1',       'SNR (spin-echo signal / $\sigma$), echo 1', 1, parula(256), [0,200], [0,0,0];
+                'SNR_e2',      'SNR e2',       'SNR (spin-echo signal / $\sigma$), echo 2', 1, parula(256), [0,200], [0,0,0];
+                'csfFrac',     'CSF fraction', 'CSF fraction (1 $-$ tissue mask)',         1, gray(256),   [0,1],    [1,0,0];
             };
         end
 

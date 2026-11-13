@@ -47,7 +47,8 @@ Config:
                               "pipeline" keys are read here; "fit" keys are read by MATLAB.
   --fit key=value             Override a "fit" option (repeatable). Value is JSON; bare words are
                               quoted automatically (e.g. --fit physBdClipVal=NaN --fit Hct=0.4
-                              --fit physBd_OEF=[0,1])
+                              --fit physBd_OEF=[0,1]). Nested blocks are merged key by key, e.g.
+                              --fit 'quality={"enabled":true,"snr_min":5}' keeps the other quality keys.
 
 Pipeline options (override the config; defaults in brackets):
   --allSubjDir <path>         [$allSubjDir]

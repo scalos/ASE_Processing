@@ -551,3 +551,51 @@ phases.
   correction.
 
 **Deleted from scratch:** the 4 Phase 7 fit folders and logs.
+
+---
+
+## Phase 8 — Outputs, config, viewer
+
+**Changes:**
+- **`ASE_fitting.m`:**
+  - Writes `_qualityMask` (1 = kept) and `_qualityFlags` (bitmask; exact integers in single
+    precision).
+  - Every Phase 2–4 intermediate map is written as well, each with a manifest entry. The
+    manifest has 33 path entries with everything on, and no map on disk lacks an entry.
+- **`BashFiles/ase_config.json`:**
+  - New `fit.quality` block with all 26 flags and thresholds, every feature off. It matches
+    `qualityDefaults()` exactly (checked in MATLAB).
+  - New pipeline key `qualityMaskNames` (from Phase 5).
+- **`runASEFromConfig.m`:**
+  - `convertSpecial`/`encodeSpecial` already recurse, so the nested block works as is.
+  - **Fix found while testing:** `--fit 'quality={...}'` used to *replace* the whole quality
+    block, so `config_resolved.json` recorded only the override keys. Nested struct overrides
+    are now **merged key by key**, and the block goes through `qualityDefaults`. That validates
+    the keys and records the full 26-key block.
+  - Verified with `--fit 'quality={"enabled":true,"snr_min":7}'`: the resolved config and the
+    manifest both show `snr_min=7`, `csf_max=0.2`, 26 keys.
+  - A typo (`"enabeld"`) fails cleanly: "Unknown quality option(s): enabeld", recorded in the
+    failure log. The `aseFit.sh --help` text documents the merge.
+- **`ASE_Viewer.m`:**
+  - `loadManifest` now loads every map listed in `mapDefs` that the manifest has, instead of a
+    hard-coded list.
+  - New `mapDefs` entries: qualityMask, qualityFlags, vCBV_quad, vCBV_z, R2P_e1/e2, R2P_Fstat,
+    Gz_e1/e2, zshimFracLow, sigma_e1/e2, SNR_e1/e2, csfFrac.
+  - **ROI mode:** when a `qualityMask` is loaded, excluded member voxels are drawn **in cyan**
+    over the red ROI overlay, and the ROI curve is computed from kept voxels only, as in the fit.
+    Optional noise weighting is not reproduced in the viewer.
+
+**Checks:**
+- **Default run:** bit-identical to baseline.
+- **`quality.enabled` + `dBCorr`:** flags are integers, max 1021, and `mask == (flags==0)`
+  exactly.
+- **Viewer** (driven from `matlab -batch`):
+  - Loaded all 22 maps.
+  - Opened the window and cycled through all 22 volume entries without error.
+  - Selected `Left-Thalamus-Proper`, and the cyan excluded-voxel overlay was created.
+  - I couldn't *look* at the rendering, so a visual check is still needed (Phase 9.4).
+- **Side note:** manifest `paths` are stored without the `.nii` extension, so `isfile` on them
+  fails. This was already the case before the branch (for example `CoeffsLong`); the viewer
+  copes. Not changed.
+
+**Deleted from scratch:** 4 fit folders, logs and the failure log from the typo test.
