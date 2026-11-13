@@ -1,0 +1,49 @@
+function tests = test_vcbvConsistency
+% Monte-Carlo check of the analytic SEs in vcbvConsistency (2-echo protocol of the test subject).
+    tests = functiontests(localfunctions);
+end
+
+function setupOnce(tc)
+    root = fileparts(fileparts(mfilename('fullpath')));
+    tc.applyFixture(matlab.unittest.fixtures.PathFixture(fullfile(root,'CoreMatFiles')));
+end
+
+function testSEMatchesMonteCarlo(tc)
+    rng(7);
+    nMC = 20000;
+    dte = repmat((0:44).',2,1);                       % 2 reps
+    tau = [dte; dte + 32]/1000;  TE = [61.2*ones(90,1); 93.2*ones(90,1)]/1000;
+    echo = [ones(90,1); 2*ones(90,1)];
+    short = tau <= 0.014;  long = tau > 0.020;
+    zeta = 0.04; R2 = 12; R2P = 6; dw = R2P/zeta; c = log(400);
+    lnS = c - R2*TE - R2P*tau + zeta;                 % long-regime asymptote
+    lnS(short) = c - R2*TE(short) - 0.3*zeta*(dw*tau(short)).^2;
+    S = exp(lnS);
+    sigma = [4; 3.5];                                 % per echo, signal units
+    Y = S.' + sigma(echo).' .* randn(nMC, numel(S));
+    Y = reshape(Y, nMC,1,1,[]);
+    yL = Y(:,:,:,long);  yS = Y(:,:,:,short);
+    XL = [ones(nnz(long),1), -TE(long), -tau(long)];
+    [BL,~,~] = fitMultiRegressor(yL, XL);
+    TES = TE(short);
+    modS = yS .* exp(BL(:,:,:,2) .* reshape(TES,1,1,1,[]));
+    XS = [ones(nnz(short),1), tau(short).^2];
+    [BS,~,~] = fitMultiRegressor(modS, XS);
+    fr.vCBV = BL(:,:,:,1) - BS(:,:,:,1);  fr.R2P = BL(:,:,:,3);  fr.k = BS(:,:,:,2);
+    fr.vCBV_quad = -0.3*fr.R2P.^2./fr.k;  fr.vCBV_quad(~(fr.k<0)) = NaN;
+    sl = struct('sigma', repmat(reshape(sigma,1,1,1,2), nMC,1,1,1), ...
+                'echoL', echo(long), 'facL', ones(nnz(long),1), 'echoS', echo(short), 'facS', ones(nnz(short),1));
+    o = vcbvConsistency(yL, yS, XL, XS, TES, fr, sl);
+    sdInt = std(fr.vCBV(:));  sdQ = std(fr.vCBV_quad(:),'omitnan');
+    fprintf('vCBV_int: MC SD %.4g, analytic SE %.4g | vCBV_quad: MC SD %.4g (robust %.4g), SE %.4g | z: mean %.3f SD %.3f\n', ...
+        sdInt, median(o.SE_int(:)), sdQ, iqr(fr.vCBV_quad(:))/1.349, median(o.SE_quad(:),'omitnan'), mean(o.z(:),'omitnan'), std(o.z(:),'omitnan'));
+    tc.verifyEqual(median(o.SE_int(:)), sdInt, 'RelTol', 0.05);
+    tc.verifyEqual(median(o.SE_quad(:),'omitnan'), iqr(fr.vCBV_quad(:))/1.349, 'RelTol', 0.15);
+    zr = iqr(o.z(:))/1.349;
+    fprintf('z: median %.3f robust SD %.3f, frac |z|>3 = %.4f (Gaussian 0.0027)\n', median(o.z(:),'omitnan'), zr, mean(abs(o.z(:))>3));
+    % vCBV_quad is a ratio (nonlinear), so z is slightly biased and not exactly N(0,1);
+    % tolerances reflect the delta-method approximation, not exactness.
+    tc.verifyEqual(zr, 1, 'AbsTol', 0.15);
+    tc.verifyLessThan(abs(median(o.z(:),'omitnan')), 0.25);
+    tc.verifyLessThan(mean(abs(o.z(:))>3), 0.01);
+end

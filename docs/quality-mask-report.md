@@ -310,3 +310,80 @@ through-slice dephasing had been inflating R2′ and vCBV together.
 **Deleted from scratch:** the 2 Phase 3 fit folders and logs. Kept:
 `testData/scratch/qm/diag/` (resampled brain mask and aseg), which later diagnostics need. It
 will be deleted at the end.
+
+---
+
+## Phase 4 — Fit extensions
+
+**Changes:**
+- **`fitASERegimes`** (in `ASE_fitting.m`):
+  - Also returns `k` = `BS(:,:,:,2)` and `vCBV_quad = −0.3·R2′²/k` (NaN where k ≥ 0) whenever
+    the short design has a τ² column.
+  - It also returns its design matrices, so the error propagation uses exactly the fitted design.
+  - The ROI path gets the same fields; they aren't used there yet.
+- **New `CoreMatFiles/vcbvConsistency.m`:** analytic standard errors of vCBV_int and vCBV_quad,
+  and the z-score of their difference.
+  - It uses per-voxel OLS projection rows P = (XᵀWX)⁻¹XᵀW, built with `pageinv`/`pagemtimes` in
+    voxel chunks, so each voxel's own valid-frame set (z-shim NaNs included) is respected.
+  - Log-space noise per frame is σ_echo/S, scaled by 1/√nReps for averaged frames.
+  - It includes the **coupling through R2**: the short fit uses ln S + R2·TE with R2 from the
+    long fit, which correlates vCBV_int and k with the long data.
+  - vCBV_quad uses the delta method.
+- **New `fitR2PerEcho`** (local to `ASE_fitting.m`):
+  - Separate long fits per echo, ln S = c_e − R2′_e·τ.
+  - RSS = rms²·n from `fitMultiRegressor`.
+  - F = (RSS_joint − RSS_split)/(RSS_split/(n−4)) with df (1, n−4). The split model has 4
+    parameters and the joint model 3, nested. The p-value is kept internally for bit 9.
+- **Outputs:** `_vCBV_quad`, `_vCBV_z`, `_vCBV_SE`, `_vCBVquad_SE`, `_R2P_e1`, `_R2P_e2`,
+  `_R2P_Fstat`, all in the manifest. They run when `quality.fitExtensions` is set, or when
+  `quality.enabled` is set with any criterion that needs them.
+- **New `Tests/test_vcbvConsistency.m`:** Monte Carlo over 20,000 voxels with the real protocol
+  (2 reps, 2 echoes, σ = 4/3.5).
+
+| quantity | Monte Carlo | analytic |
+|---|---|---|
+| SE(vCBV_int) | SD 0.01073 | **0.01076** |
+| SE(vCBV_quad) | robust SD 0.0102 | **0.0099** |
+| z | median −0.16, robust SD 0.92, \|z\|>3 in 0.18% | — |
+
+The small bias and the narrower spread of z come from the delta-method approximation of a
+ratio. The tolerances are set to that level, and all 10 repo tests pass.
+
+**Runs** (each about 15 s, 6.6–7.0 GB peak, up from 5.1 GB):
+- Extensions without correction: all baseline outputs bit-identical.
+- Extensions with `dBCorr=true`.
+
+**Real-data diagnostics** (brain mask; WM in brackets):
+
+| | no correction | with dBCorr |
+|---|---|---|
+| vCBV_int median | 0.143 [0.118] | 0.104 [0.090] |
+| vCBV_quad median | 0.182 [0.151] | 0.118 [0.101] |
+| fraction with k < 0 (vCBV_quad defined) | 73.8% [82.0%] | 64.2% [74.8%] |
+| SE_int / SE_quad median | 0.0044 / 0.037 | 0.0039 / 0.027 |
+| z median, robust SD | −0.75, 1.29 | −0.54, 1.31 |
+| \|z\| > 3 | 22.1% [18.5%] | 22.1% [20.3%] |
+| R2′ joint / e1 / e2 median | 7.54 / 5.23 / 7.77 | 5.26 / 4.00 / 5.35 |
+| F-test p < 0.01 | **78.8%** [82.9%] | **63.8%** [72.2%] |
+
+**Surprises and concerns:**
+1. **The R2′ echo F-test rejects in most of the brain.**
+   - R2′ from echo 2 (τ = 52–76 ms) is consistently about 2 s⁻¹ higher than from echo 1
+     (τ = 21–44 ms).
+   - That fits a slope that is still increasing toward the asymptotic R2′. Echo-1's long frames
+     start at 1.2 × t_crit, where the curve is not yet linear.
+   - With about 130 frames, even small systematic misfit becomes very significant.
+   - **At its placeholder threshold, bit 9 would exclude about 80% of WM.** It needs a
+     calibrated threshold, or an effect-size criterion such as |R2′_e1 − R2′_e2| relative to its
+     SE. **Open question Q3.**
+2. **Bit 1 (k ≥ 0) would exclude about 26% of the brain** (18% of WM), and |z| > 3 another
+   20%. vCBV_quad is noisy (SE about 0.03, roughly 8× SE_int), and its median exceeds vCBV_int.
+   z is overdispersed (robust SD 1.3, not 1), which suggests a systematic model difference on
+   top of noise. Calibration is needed (Phase 9).
+3. Correction moves vCBV_quad toward vCBV_int (0.18 → 0.12 vs 0.10), and roughly halves the
+   F-statistic. That is consistent with through-slice dephasing being part of the misfit.
+4. **Memory:** peak rises by about 2 GB with all diagnostics on. Runtime is unchanged.
+
+**Deleted from scratch:** the 2 Phase 4 fit folders and logs. The plan says to "keep both" the
+pre- and post-correction runs. I kept them as the numbers above, in line with the
+nothing-on-disk rule.

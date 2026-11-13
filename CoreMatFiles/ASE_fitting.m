@@ -55,7 +55,8 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
     q = qualityDefaults(opts.quality);
     opts.quality = q;          % resolved block is recorded in the manifest
     % which quality diagnostics are needed
-    needNoise = q.repNoise || q.fitExtensions || q.noiseWeighting || (q.enabled && q.useSNR);
+    needExt   = q.fitExtensions || (q.enabled && (q.useQuadSign || q.useVcbvZ || q.useR2PEcho));
+    needNoise = q.repNoise || needExt || q.noiseWeighting || (q.enabled && q.useSNR);
 
     %% Load files and verify inputs
     if v; fprintf('Verifying Files...\n');end
@@ -312,6 +313,28 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         % rms_short = fit.rmsS;
         rawMaps = struct('R2',fitRes.R2,'R2P',fitRes.R2P,'vCBV',fitRes.vCBV,'OEF',fitRes.OEF);
 
+        %% fit extensions (quality diagnostics): vCBV consistency and per-echo R2'
+        if needExt
+            if ~isempty(fitRes.k)
+                qual.vCBV_quad = fitRes.vCBV_quad;
+                % noise factor per combined frame: averaged sweep frames have sigma/sqrt(nReps)
+                facFrame = ones(nFrames,1);
+                if opts.averageReps, facFrame(1:nSweep*nEchos) = 1/sqrt(nReps); end
+                sigLog = struct('sigma',qual.sigma, ...
+                    'echoL',frameEcho(longInds_good), 'facL',facFrame(longInds_good), ...
+                    'echoS',frameEcho(shortInds_good),'facS',facFrame(shortInds_good));
+                c = vcbvConsistency(ase_long, ase_short, fitRes.XL, fitRes.XS, fitRes.TES, fitRes, sigLog);
+                qual.vCBV_SE = c.SE_int;  qual.vCBVquad_SE = c.SE_quad;  qual.vCBV_z = c.z;
+            else
+                warning('Short regime has no tau^2 column: vCBV_quad / vCBV_z not computed.');
+            end
+            if nEchos == 2
+                pe = fitR2PerEcho(ase_long, taus_long, frameEcho(longInds_good), fitRes.rmsL, fitRes.nValidL);
+                qual.R2P_e1 = pe.R2P_e1;  qual.R2P_e2 = pe.R2P_e2;
+                qual.R2P_Fstat = pe.Fstat;  qual.R2P_pval = pe.pval;
+            end
+        end
+
         C = exp(B_short(:,:,:,1)); %amplitude
         [imErr,~] = computeASEError(ase_sorted,taus_full,TEs_full,rawMaps.R2,rawMaps.R2P,rawMaps.vCBV,C,"normalize",opts.normErr);
 
@@ -456,7 +479,7 @@ function resolvedPaths = writeQualityMaps(qual, templateHdr, outPref, nEchos, ov
                 'verbose',v, 'overwrite',overwrite, 'mapName',key);
         end
     end
-    single = {'zshimFracLow'};
+    single = {'zshimFracLow','vCBV_quad','vCBV_SE','vCBVquad_SE','vCBV_z','R2P_e1','R2P_e2','R2P_Fstat'};
     for i = 1:numel(single)
         nm = single{i};
         if ~isfield(qual,nm) || isempty(qual.(nm)), continue; end
@@ -493,14 +516,16 @@ function out = fitASERegimes(aseLong, aseShort, tausLong, TEsLong, tausShort, TE
     % fitting: ln(S) = ln(C) + vCBV − R2*TE − R2P*|dTE|
     if nEchos == 1
         %unable to compute R2 so we just regress against dTE:
-        [BL,rmsL,nL] = fitMultiRegressor(aseLong, [ones(numel(tauL),1), -tauL], mask);
+        XLdes = [ones(numel(tauL),1), -tauL];
+        [BL,rmsL,nL] = fitMultiRegressor(aseLong, XLdes, mask);
         % BL(:,:,:,1) = ln(C) + vCBV − R2*TE
         R2  = [];
         R2P = BL(:,:,:,2);
         modShort = aseShort;                 % constant TE: R2*TE cancels in vCBV
     else
         %here we can (and need) to get R2 so we regress against TE AND dTE
-        [BL,rmsL,nL] = fitMultiRegressor(aseLong, [ones(numel(tauL),1), -TEL, -tauL], mask);
+        XLdes = [ones(numel(tauL),1), -TEL, -tauL];
+        [BL,rmsL,nL] = fitMultiRegressor(aseLong, XLdes, mask);
         % B_long(:,:,:,1) = ln(C) + vCBV
         R2  = BL(:,:,:,2);
         R2P = BL(:,:,:,3);
@@ -522,8 +547,40 @@ function out = fitASERegimes(aseLong, aseShort, tausLong, TEsLong, tausShort, TE
     OEF  = R2P ./ (vCBV * oefScale);
     OEF(vCBV <= 0 | R2P <= 0) = NaN;         % avoids negative/negative = spurious positive OEF
 
+    % quadratic (short-regime curvature) vCBV: ln S = c - 0.3*vCBV*(dw*tau)^2 and R2' = vCBV*dw
+    %   => k = -0.3*R2'^2/vCBV  =>  vCBV_quad = -0.3*R2'^2/k   (only defined for k < 0)
+    if size(Xs,2) == 2
+        k = BS(:,:,:,2);
+        vCBV_quad = -0.3*R2P.^2 ./ k;
+        vCBV_quad(~(k < 0)) = NaN;
+    else
+        k = [];  vCBV_quad = [];
+    end
+
     out = struct('BL',BL,'rmsL',rmsL,'nValidL',nL, 'BS',BS,'rmsS',rmsS,'nValidS',nS, ...
-                 'R2',R2,'R2P',R2P,'vCBV',vCBV,'OEF',OEF);
+                 'R2',R2,'R2P',R2P,'vCBV',vCBV,'OEF',OEF,'k',k,'vCBV_quad',vCBV_quad, ...
+                 'XL',XLdes,'XS',Xs,'TES',TES);
+end
+
+function out = fitR2PerEcho(aseLong, tausLong, echoLong, rmsJoint, nJoint)
+% Separate long-regime fits per echo (ln S = c_e - R2'_e*tau) and an F-test of the joint
+% model (shared R2', TE term) against the split model (4 parameters).
+%   F = (RSS_joint - RSS_split) / (RSS_split/(n-4)),  df = (1, n-4)
+    tau = abs(tausLong(:))/1000;
+    sz = size(aseLong,1:3);
+    R2P = NaN([sz 2]);  rss = zeros(sz);  n = zeros(sz);
+    for e = 1:2
+        sel = echoLong(:) == e;
+        [B,r,ne] = fitMultiRegressor(aseLong(:,:,:,sel), [ones(nnz(sel),1), -tau(sel)], []);
+        R2P(:,:,:,e) = B(:,:,:,2);
+        rss = rss + r.^2.*ne;  n = n + ne;
+    end
+    rssJ = rmsJoint.^2 .* nJoint;
+    F = (rssJ - rss) ./ (rss ./ (n - 4));
+    F(n <= 4 | ~isfinite(F)) = NaN;
+    F(F < 0) = 0;                           % nested models: negative only by round-off
+    p = 1 - fcdf(F, 1, n - 4);
+    out = struct('R2P_e1',R2P(:,:,:,1),'R2P_e2',R2P(:,:,:,2),'Fstat',F,'pval',p);
 end
 
 
