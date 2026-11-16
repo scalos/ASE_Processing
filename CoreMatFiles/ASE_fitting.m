@@ -265,7 +265,7 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         qual.zshimAmp   = NaN([szV, nEchos]);
         qual.zshimAtten = NaN([szV, nEchos]);
         qual.zshimEdge  = zeros([szV, nEchos]);
-        tDeph = NaN(nEchos,1);
+        tDeph = NaN(nEchos,1);  shimY = cell(1,nEchos);  shimM = cell(1,nEchos);
         for e = 1:nEchos
             idx = find(frameEcho == e & ismember(frameSrc, info.zShimInds));
             [~,ord] = sort(frameSrc(idx));  idx = idx(ord);   % same order as info.zMoments
@@ -275,8 +275,20 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
                                  'GzRange', q.zshim_GzRange, 'GzStep', q.zshim_GzStep);
             qual.Gz(:,:,:,e) = o.Gz;          qual.zshimAmp(:,:,:,e)   = o.A;
             qual.zshimAtten(:,:,:,e) = o.atten; qual.zshimEdge(:,:,:,e) = double(o.edge);
-            tDeph(e) = tD(1);
+            tDeph(e) = tD(1);  shimY{e} = ase_sorted(:,:,:,idx);  shimM{e} = info.zMoments(:,e);
         end
+        % Gz used for the correction: one joint estimate from all echoes (the same physical
+        % gradient), or each echo's own. The per-echo estimates stay in qual.Gz (diagnostics,
+        % bit 7); with the joint fit, amplitude/attenuation/edge come from the joint fit.
+        GzCorr = qual.Gz;
+        if q.zshim_jointGz && nEchos > 1
+            oj = fitZshimGradientJoint(shimY, shimM, tDeph/1000, dz(:), ...
+                                       'GzRange', q.zshim_GzRange, 'GzStep', q.zshim_GzStep);
+            qual.GzJoint = oj.Gz;
+            GzCorr = repmat(oj.Gz, 1, 1, 1, nEchos);
+            qual.zshimAmp = oj.A;  qual.zshimAtten = oj.atten;  qual.zshimEdge = double(oj.edge);
+        end
+        clear shimY
         % summaries over voxels with real signal (echo-1 amplitude > 0.2*p99; background
         % voxels would otherwise dominate)
         A1 = qual.zshimAmp(:,:,:,1);
@@ -284,8 +296,12 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         if v
             for e = 1:nEchos
                 Ge = qual.Gz(:,:,:,e);  Ee = qual.zshimEdge(:,:,:,e);
-                fprintf('Z-shim echo %d: t_deph=%.1fms, median Gz=%.1f uT/m, %.1f%% edge-flagged (voxels with signal)\n', ...
+                fprintf('Z-shim echo %d: t_deph=%.1fms, median Gz=%.1f uT/m (own fit), %.1f%% edge-flagged in the correction fit (voxels with signal)\n', ...
                     e, tDeph(e), median(Ge(sig),'omitnan'), 100*mean(Ee(sig)>0));
+            end
+            if isfield(qual,'GzJoint')
+                fprintf('Z-shim joint fit (used for correction): median Gz=%.1f uT/m (voxels with signal)\n', ...
+                    median(qual.GzJoint(sig),'omitnan'));
             end
         end
         % attenuation per voxel and frame (each echo's frames use that echo's Gz); voxels
@@ -298,7 +314,7 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         for f = 1:nFrames
             if ~usePts_full(f), continue; end
             e = frameEcho(f);
-            F = zshimAttenuation(qual.Gz(:,:,:,e), taus_full(f)/1000, dz(e));
+            F = zshimAttenuation(GzCorr(:,:,:,e), taus_full(f)/1000, dz(e));
             F(isnan(F)) = 1;
             low = F < q.zshim_Fmin;
             if ismember(f, usedLong), nLow = nLow + low; end
@@ -309,7 +325,7 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
             end
         end
         qual.zshimFracLow = nLow / max(numel(usedLong),1);
-        qual.zshimFracLow(all(isnan(qual.Gz),4)) = NaN;
+        qual.zshimFracLow(all(isnan(GzCorr),4)) = NaN;
         if v && opts.dBCorr
             if q.zshim_weightF2, wTxt = sprintf('F^2 weights, NaN below F=%.2f', Fcut);
             else, wTxt = sprintf('unweighted, NaN below F=%.2f', Fcut); end
@@ -342,8 +358,8 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
     % corrected voxel-frame gets weight F^2 in the fits (empty = unweighted, the default)
     wLong = [];  wShort = [];
     if needZshim && opts.dBCorr && q.zshim_weightF2
-        wLong  = zshimWeights(qual.Gz, taus_full(longInds_good),  frameEcho(longInds_good),  dz);
-        wShort = zshimWeights(qual.Gz, taus_full(shortInds_good), frameEcho(shortInds_good), dz);
+        wLong  = zshimWeights(GzCorr, taus_full(longInds_good),  frameEcho(longInds_good),  dz);
+        wShort = zshimWeights(GzCorr, taus_full(shortInds_good), frameEcho(shortInds_good), dz);
     end
         
 
@@ -617,7 +633,7 @@ function resolvedPaths = writeQualityMaps(qual, templateHdr, outPref, nEchos, ov
                 'verbose',v, 'overwrite',overwrite, 'mapName',key);
         end
     end
-    single = {'qualityMask','qualityFlags','csfFrac','zshimFracLow','vCBV_quad','vCBV_SE','vCBVquad_SE','vCBV_z','kZ','R2P_e1','R2P_e2','R2P_Fstat'};
+    single = {'qualityMask','qualityFlags','csfFrac','GzJoint','zshimFracLow','vCBV_quad','vCBV_SE','vCBVquad_SE','vCBV_z','kZ','R2P_e1','R2P_e2','R2P_Fstat'};
     for i = 1:numel(single)
         nm = single{i};
         if ~isfield(qual,nm) || isempty(qual.(nm)), continue; end

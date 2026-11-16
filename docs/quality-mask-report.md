@@ -1296,3 +1296,49 @@ The 3×3 smoothing changes nothing material.
 - **Possible future work:** estimate the per-voxel peak shift from the sweep, or the in-plane
   gradient from a field map, and fit around the shifted peak. To confirm the mechanism, check the
   phase-encode direction.
+
+### Q7 — Smaller choices
+
+**Kept as implemented:**
+- σ with n−1 degrees of freedom.
+- SNR at dTE = 0.
+- Bit 3 uses the minimum SNR over echoes.
+- Noise weighting uses echo-1 SNR² (still off).
+- Mask output names reuse `segSuffix`.
+
+**Thresholds:** not recalibrated yet. Set C was calibrated before Q1–Q6, so recalibration across
+several subjects is the next step. The quality mask stays off by default until then.
+
+**Joint Gz fit (implemented; off by default):**
+- **Code:** new `fitZshimGradientJoint`. It fits one Gz per voxel to all echoes' z-shim frames,
+  with a separate amplitude per echo and each echo's own moments, dephasing time and slice
+  thickness.
+- **Setting:** `quality.zshim_jointGz`. When on, it drives the correction, the F² weights and
+  the edge flags. The per-echo Gz maps are still written and still feed bit 7. Writes
+  `_GzJoint`.
+- **Tests** (3 new; 24 of 24 pass):
+  - It recovers Gz exactly without noise.
+  - With one echo it equals `fitZshimGradient`.
+  - At realistic SNR its p90 error is 0.5–0.7 µT/m, against 0.6–1.0 for either echo alone.
+
+**Scratch subject** (dBCorr, joint vs per-echo):
+
+| | per-echo | joint |
+|---|---|---|
+| echo-2 edge flags (brain) | 13.8% | 8.3% |
+| zshimFracLow > 0.3 | 11.5% | 5.9% |
+| ROI occupancy at weight 0 | 13.6% | 4.9% |
+| brain R2′ / vCBV / OEF | 5.25 / 0.112 / 0.203 | 5.37 / 0.116 / 0.200 |
+| regions with OEF | 154 | **143** |
+
+**Why the joint fit loses regions:**
+- The 11 lost regions are inferior temporal, medial orbitofrontal, amygdala and rostral ACC.
+- There the echoes disagree strongly: |Gz_e1 − Gz_e2| median 17.7 µT/m (p90 148), and 57% of
+  voxels are above 12.7. In the rest of the brain the median is 3.0 and 11% are above 12.7.
+- A single linear through-slice gradient doesn't describe the field there. The joint estimate
+  (median |Gz| 33) falls between the echoes and under-corrects echo 2 (whose own median is 54).
+- **The per-echo fit adapts to each echo's profile and is more robust there.**
+
+**Decision:** per-echo stays the default; the joint fit is available as an option. It may be
+worth re-evaluating with thinner slices in future scans, where the linear through-slice model
+should hold better.

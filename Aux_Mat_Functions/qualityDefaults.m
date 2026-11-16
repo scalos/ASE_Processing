@@ -24,6 +24,9 @@ function q = qualityDefaults(q)
     d.zshim_GzStep     = 1;           % uT/m
     d.zshim_Fmin       = 0.5;         % 'heavily attenuated' long frame (F < Fmin), counted for bit 8;
                                       %   also the NaN cutoff when zshim_weightF2 is false (legacy)
+    d.zshim_jointGz    = false;       % dBCorr: one Gz fitted to all echoes' z-shim frames (off: biased where
+                                      %   echoes disagree, i.e. non-linear through-slice field; see report Q7)
+                                      %   (false: each echo corrected with its own Gz)
     d.zshim_weightF2   = true;        % dBCorr: weight each corrected voxel-frame by F^2 in the fits
     d.zshim_Fcut       = 0.1;         % dBCorr with F^2 weights: frames with F below this -> NaN
     % ---- ROI integration ----
