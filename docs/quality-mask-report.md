@@ -990,3 +990,58 @@ change.
 
 **Interpretation:** the legacy L Caudate value of 0.686 came from the curve-shape bias that (c)
 removes. Legacy dBCorr pulled the region's vCBV down to 0.069.
+
+### Q3 — Bit 9 off (a), and the regime-boundary investigation (c)
+
+**(a)** `useR2PEcho` now defaults to false. The per-echo R2′ maps and the F statistic are still
+written as diagnostics.
+
+**(c) Code change:** `tCrit_buffer` accepts a scalar (symmetric, unchanged default 3 ms) or
+`[below above]`, e.g. `--fit 'tCrit_buffer=[3,12]'`. The 1.5·t_c boundary itself is not touched.
+
+**Model simulation:**
+- Noise-free Yablonskiy–Haacke cylinder signal, ln S = −ζ·f_s(δω·τ) − R2·TE, on this
+  protocol's τ/TE sampling. It goes through the pipeline's regime split and designs.
+- **The lower buffer (short regime) has no effect:** −1, −3 and −6 ms give identical results.
+  All the bias comes from long-regime frames that are still in the transition.
+- **The echo gap appears only when the true t_c is longer than the assumed one.**
+  - The assumed t_c is 11.57 ms, from StO2_max = 0.6, i.e. (1−Y) ≥ 0.4.
+  - At OEF 0.35–0.45 the gap is under 3%.
+  - At lower OEF the gap and the biases grow:
+
+| true OEF (t_c) | buffer +3: echo gap / ΔvCBV / ΔOEF | buffer +12 | buffer +15 |
+|---|---|---|---|
+| 0.25 (18.5 ms) | 16% / −13% / +13% | 9% / −6% / +6% | 7% / −4% / +5% |
+| 0.20 (23.1 ms) | 24% / −27% / +27% | 16% / −19% / +17% | 14% / −17% / +15% |
+| 0.18 (25.7 ms) | 27% / −35% / +36% | 19% / −27% / +25% | 17% / −25% / +23% |
+
+- R2 is essentially unbiased (< 1%), and R2′ is biased by only 2–12%. The bias goes mostly into
+  vCBV, through the long-regime intercept, and from there into OEF.
+
+**Real data** (dBCorr with Q1/Q2, lower buffer 3, brain = xvent fraction > 0.9):
+
+| buffer above | echo-1 long frames/rep | R2′ e1 / e2 | echo gap (median) | F median | vCBV | OEF | SE(vCBV) | ROI: nOEF / OEF / vCBV |
+|---|---|---|---|---|---|---|---|---|
+| +3 (current) | 24 | 3.71 / 5.24 | 28.5% | 21.7 | 0.101 | 0.222 | 0.0039 | 153 / 0.257 / 0.102 |
+| +6 | 21 | 3.88 / 5.24 | 25.4% | 13.3 | 0.106 | 0.214 | 0.0042 | 154 / 0.249 / 0.107 |
+| +9 | 18 | 4.14 / 5.24 | 20.9% | 7.3 | 0.110 | 0.207 | 0.0045 | 154 / 0.242 / 0.110 |
+| +12 | 15 | 4.28 / 5.24 | 18.5% | 4.1 | 0.112 | 0.203 | 0.0047 | 154 / 0.238 / 0.112 |
+| +15 | 12 | 4.36 / 5.29 | 17.6% | 2.0 | 0.116 | 0.197 | 0.0051 | 154 / 0.232 / 0.116 |
+
+- **The echo gap does not depend on |Gz| below 25 µT/m.**
+  - It is 25.5–28.4% at +3 and 16.2–17.8% at +12.
+  - It is higher only above 25 µT/m (40% and 28%).
+  - So incomplete z-shim correction isn't the cause.
+- **The data follow the model at OEF ≈ 0.18–0.20, which agrees with the measured OEF.**
+  - Gap in low-Gz voxels: 25.5% → 16.2%.
+  - Model at OEF 0.20: 23.8% → 16.0%.
+  - The echo-1/echo-2 R2′ discrepancy is therefore what static-dephasing theory predicts when the
+    long regime starts before the asymptote.
+- **Interpretation:**
+  - The 1.5·t_c criterion is right, but t_c is computed for (1−Y) = 0.4. This tissue has
+    (1−Y) ≈ 0.2, so t_c ≈ 23 ms and 1.5·t_c ≈ 35 ms.
+  - Echo 1's long frames (21–44 ms) are mostly before that.
+  - With the current boundary the model implies OEF is overestimated by about 25% and vCBV
+    underestimated by the same amount in this subject.
+  - The buffer can reduce this but not remove it, because echo 1 stops at 44 ms.
+  - One subject, idealized model (cylinders, static dephasing, no diffusion).

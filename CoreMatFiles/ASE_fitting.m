@@ -16,7 +16,7 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
 
         % Fitting options:
         opts.tauRange = []; %ms
-        opts.tCrit_buffer = 3; %ms
+        opts.tCrit_buffer = 3; %ms; scalar (symmetric) or [below above] t_crit
         opts.averageReps = false %whether to average repetitions before fitting 
         opts.dBCorr = false %Through-slice (z-shim based) dB correction; settings in opts.quality.zshim_*
         opts.tauUsePts = []; %use to restrict tau points used in all fitting operations.  ndTE x nEchos
@@ -227,8 +227,11 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
 
     t_crit = 1/(gamma*(4/3)*pi*dChi_0*Hct*(1-StO2_max)*B0)*1000;
     t_crit = round(1.5*t_crit,3);
-    t_crit_lower = max(0,t_crit-opts.tCrit_buffer);
-    t_crit_upper = t_crit+opts.tCrit_buffer;
+    tcBuf = opts.tCrit_buffer(:).';
+    assert(any(numel(tcBuf) == [1 2]) && all(tcBuf >= 0), 'tCrit_buffer must be a scalar or [below above], >= 0 (ms).');
+    if isscalar(tcBuf), tcBuf = [tcBuf tcBuf]; end
+    t_crit_lower = max(0,t_crit-tcBuf(1));
+    t_crit_upper = t_crit+tcBuf(2);
     [~,critInd] = min(abs(taus_full-t_crit));
     [~,critInd_lower] = min(abs(taus_full-t_crit_lower));
     [~,critInd_upper] = min(abs(taus_full-t_crit_upper));
@@ -243,11 +246,11 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
     shortIndsPretty = compressIntArr(shortInds);
     longIndsPretty = compressIntArr(longInds);
     if v; fprintf(['Computed critical time (1.5x): %0.2fms (at idx %d)\n' ...
-                   '\t- %0.1fms buffer => [%0.1fms-%0.1fms] = crit-window\n' ...
+                   '\t- -%0.1f/+%0.1fms buffer => [%0.1fms-%0.1fms] = crit-window\n' ...
                    '\t=> - Short Regime: [%0.1f:%0.1f]ms (frames %s)\n' ...
                    '\t   - Long Regime:  [%0.1f:%0.1f]ms (frames %s)\n'], ...
                    t_crit,critInd, ...
-                   opts.tCrit_buffer,taus_full(critInd_lower),taus_full(critInd_upper),...
+                   tcBuf(1),tcBuf(2),taus_full(critInd_lower),taus_full(critInd_upper),...
                    min(shortTimes,[],'omitmissing'),max(shortTimes,[],'omitmissing'),shortIndsPretty, ...
                    min(longTimes,[],'omitmissing'),max(longTimes,[],'omitmissing'),longIndsPretty);
     end
