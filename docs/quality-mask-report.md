@@ -952,3 +952,41 @@ change.
   - Finite-OEF regions drop from 137 to 132. High-Gz voxels now re-enter the region means at
     full membership, which is the Q2 question.
   - L Caudate OEF is 0.370 at baseline, 0.686 with legacy dBCorr and 0.612 with F².
+
+### Q2 — ROI curves: one fixed weight per voxel (decided: option c)
+
+**Change:**
+- With `dBCorr` and F² weighting, each voxel's ROI membership is multiplied by one weight, used
+  the same way in every frame.
+- The weight is F² at the voxel's worst used frame (long or short regime).
+- If any used frame was dropped (F < `zshim_Fcut`), the weight is 0. That keeps the voxel set
+  identical across frames.
+- Every frame of a region curve therefore averages the same voxels in the same proportions.
+- The per-frame ROI fit weights from Q1 stay.
+- There is no new config key: this comes with `zshim_weightF2`.
+
+**Scratch subject:**
+- Default outputs are still bit-identical to the Phase 0 baseline.
+- **Weights:** the total ROI weight is 69% of occupancy, and 13.6% of occupancy has weight 0.
+- **Finite-OEF regions:** 145 at baseline, 137 with legacy dBCorr, 132 with Q1 alone, and
+  **153** with Q1 plus Q2(c).
+  - Against legacy, 17 regions gain an OEF, mostly orbitofrontal, inferior temporal, entorhinal
+    and the corpus callosum.
+  - One region loses its OEF (L Amygdala).
+- **Clipped regions:** OEF ≥ 1 in 7 regions with legacy, 2 with (c). OEF > 0.6 in 13 regions
+  with legacy, 6 with (c).
+- **Median across regions:** OEF is 0.276 with legacy and 0.257 with (c), and R2′ is 5.94 for
+  both. vCBV is 0.091 with legacy and 0.102 with (c).
+
+| ROI | OEF base / legacy / c | R2′ base / legacy / c | vCBV base / legacy / c |
+|---|---|---|---|
+| L Caudate | 0.370 / 0.686 / **0.395** | 15.1 / 10.2 / 9.0 | 0.189 / 0.069 / 0.105 |
+| L Thalamus | 0.227 / 0.258 / 0.233 | 9.01 / 5.92 / 5.76 | 0.184 / 0.106 / 0.114 |
+| L UnsegmentedWM | 0.308 / 0.377 / 0.307 | 5.92 / 4.33 / 4.19 | 0.089 / 0.053 / 0.063 |
+| ctx-lh-precuneus | 0.270 / 0.273 / 0.272 | 6.04 / 5.66 / 5.59 | 0.104 / 0.096 / 0.095 |
+| ctx-lh-lateralorbitofrontal | 0.748 / 0.756 / 0.319 | 26.8 / 19.3 / 19.1 | 0.166 / 0.118 / 0.277 |
+| ctx-lh-inferiortemporal | NaN / NaN / 1.000 | 16.3 / 6.8 / 8.0 | 0.000 / 0.000 / 0.022 |
+| L Hippocampus | 0.262 / 0.303 / 0.268 | 19.1 / 9.5 / 8.3 | 0.337 / 0.145 / 0.143 |
+
+**Interpretation:** the legacy L Caudate value of 0.686 came from the curve-shape bias that (c)
+removes. Legacy dBCorr pulled the region's vCBV down to 0.069.

@@ -477,6 +477,21 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         end
         
     
+        % ---- z-shim: one fixed weight per voxel for the region means ----
+        % Same weight in every frame, so every frame of a region curve averages the same voxel
+        % mix (no curve-shape bias); weight = F^2 at the voxel's worst used frame, and 0 if any
+        % used frame was dropped (F < Fcut), which keeps the voxel set identical across frames.
+        if ~isempty(wLong)
+            vw = min(min(wLong,[],[4 5]), min(wShort,[],[4 5]));
+            vw(vw < q.zshim_Fcut^2) = 0;
+            occTot  = full(sum(M,'all'));
+            occZero = full(sum(M(:, vw(:) == 0),'all'));
+            M = M .* double(vw(:).');
+            if v; fprintf(['Z-shim ROI voxel weights (F^2 at worst used frame): total ROI weight %.1f%% of ' ...
+                    'occupancy; %.1f%% of occupancy at weight 0 (a frame below Fcut)\n'], ...
+                    100*full(sum(M,'all'))/occTot, 100*occZero/occTot); end
+        end
+
         if v; fprintf('Averaging signal and fitting %d regions...\n',nReg); end
         meanLong  = regionMeans(ase_long,  M);
         meanShort = regionMeans(ase_short, M);
