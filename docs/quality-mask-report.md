@@ -1272,3 +1272,27 @@ The 3×3 smoothing changes nothing material.
   - Excluded occupancy rises from 44.6% to 50.0%.
   - OEF median +0.005 [IQR +0.001, +0.014], vCBV −0.001.
   - 5 small susceptibility-region regions fall below `minVoxKept`.
+
+**What bit 1 is catching (looked at 2026-11-16).**
+- **Data:** echo-1 decay curves for voxels where bit 1 is the only flag (tissue fraction > 0.95),
+  after dBCorr, compared with normal voxels (kZ < −2).
+- **The flagged voxels' signal rises after τ = 0 and peaks later.**
+  - A quadratic fit of the median curve over 0–30 ms peaks at **τ ≈ 17.5 ms**, in both WM
+    (n = 1,994) and cortex (n = 1,640).
+  - Normal voxels' fitted peak is about −5 ms, i.e. a decay from τ = 0.
+  - Individual voxels peak as late as about 40 ms, and echo 2 shows the same hump.
+- **Spatially** they cluster at air/bone–tissue interfaces: inferior temporal lobes, cerebellum,
+  and lateral and orbitofrontal cortex.
+- **Interpretation (hypothesis, not confirmed):** in-plane macroscopic field gradients shift the
+  EPI echo, so maximum signal no longer occurs at the nominal spin echo. The z-shim correction
+  only addresses the through-slice gradient.
+- **Consequences:**
+  - vCBV (long intercept minus spin-echo signal) is wrong in these voxels.
+  - The long-regime slope inherits the hump. This may contribute to the steepening behind the Q3
+    echo gap and the window dependence of vCBV.
+  - Even normal voxels decay nearly linearly from τ = 0, rather than in the quadratic
+    short-regime shape the model assumes.
+- **Bit 1 is therefore catching a real artifact**, not noise.
+- **Possible future work:** estimate the per-voxel peak shift from the sweep, or the in-plane
+  gradient from a field map, and fit around the shifted peak. To confirm the mechanism, check the
+  phase-encode direction.
