@@ -1206,3 +1206,38 @@ The 3×3 smoothing changes nothing material.
   - No flow suppression adds about +15–25% vCBV, per the paper's Fig. 4.
   - 4.8 mm slices give more through-slice dephasing. With the paper's design, z-shim
     correction lowered vCBV from 4.7% to 4.1%.
+
+### Q5 — Vein threshold (decided: relative, option b)
+
+**The "regions lost to the vein bit" from Phase 9 aren't a threshold problem.**
+- With the vein bit enabled alone, susceptibility regions lost their OEF. Those regions are full
+  of failed voxel fits: voxel-median vCBV is −0.5 to −0.8 in orbitofrontal and inferior temporal.
+- Trimming only the high-vCBV tail leaves a set dominated by negative values, so the region's
+  vCBV goes ≤ 0.
+- With bit 0 (implausible values) also on, as in any real configuration, both tails are removed.
+- So the vein bit should not be used without bit 0.
+
+**Change:**
+- New `quality.vein_mode`, default `"relative"`: flag vCBV > `vein_relK` (4) × the median
+  vCBV over tissue voxels.
+- **Tissue voxels** for that median: csfFrac < 1 − `vein_refTissueMin` (0.9), with all four raw
+  maps finite and within `physBd_*`.
+- The threshold scales with the subject's vCBV level, and with the analysis choices that set it
+  (window, dBCorr).
+- **Inputs and failure handling:**
+  - Relative mode needs csfFrac, i.e. the quality masks. Without it the bit is reported as
+    unavailable and skipped.
+  - With fewer than 100 reference voxels it warns.
+- **Absolute mode** (`"absolute"`) keeps `vein_vCBVmax`.
+- `computeVoxelQuality` returns the reference and threshold (4th output), and verbose runs print
+  them.
+- **Tests:** 3 new; 20 of 20 pass.
+
+**Scratch subject** (set C criteria + dBCorr, against the same run without the vein bit):
+- **Threshold:** 0.48 (median tissue vCBV 0.120 over 51,807 voxels).
+- **Flagged:** clean deep WM 2.0%, WM 5.5%, cortex 9.8%, deep GM 9.4%.
+- **Vein-excluded fraction per region:** median 3.7%, p90 28%.
+- **ROI effect:** OEF median +0.0006 [IQR 0, +0.008], vCBV −0.003, R2′ −0.09.
+- **5 regions lose their OEF.** All five fall below `minVoxKept` (5 effective voxels): left
+  entorhinal and pars orbitalis cortex, right entorhinal, pars orbitalis and frontal-pole WM.
+  These regions were already 95%+ excluded by the z-shim and CSF criteria.

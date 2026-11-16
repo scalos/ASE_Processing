@@ -1,4 +1,4 @@
-function [keep, flags, bitInfo] = computeVoxelQuality(rawMaps, qual, physBds, q)
+function [keep, flags, bitInfo, info] = computeVoxelQuality(rawMaps, qual, physBds, q)
 % computeVoxelQuality  Voxel exclusion mask and per-criterion bit flags.
 %
 %   rawMaps : struct with raw (unclamped) voxel maps R2, R2P, vCBV, OEF (X x Y x Z)
@@ -11,6 +11,14 @@ function [keep, flags, bitInfo] = computeVoxelQuality(rawMaps, qual, physBds, q)
 %   keep    : logical X x Y x Z, true where no enabled criterion is set
 %   flags   : uint16 X x Y x Z bitmask; bit b (0-based) = criterion b (see bitTable below)
 %   bitInfo : table with Bit, Name, Enabled, Available, nFlagged
+%   info    : struct with the vein reference (veinRef: median tissue vCBV, veinThreshold,
+%             veinRefN: voxels in the reference); NaN when not computed
+%
+% Vein (bit 5), q.vein_mode:
+%   "relative" : vCBV > vein_relK * median(vCBV) over tissue voxels, i.e. csfFrac <
+%                1 - vein_refTissueMin with all four raw maps finite and inside physBds.
+%                Scales with the subject's (and the analysis') vCBV level; needs csfFrac.
+%   "absolute" : vCBV > vein_vCBVmax.
 %
 % A disabled criterion never sets its bit. An enabled criterion whose input is missing is
 % reported as Available = false (with a warning) and sets nothing. NaN diagnostics never set a
@@ -65,9 +73,31 @@ function [keep, flags, bitInfo] = computeVoxelQuality(rawMaps, qual, physBds, q)
     % bit 4: CSF partial volume
     enabled(5) = q.useCSF;  avail(5) = has('csfFrac');
     if enabled(5) && avail(5), setBit(4, qual.csfFrac > q.csf_max); end
-    % bit 5: large vein (raw intercept vCBV)
-    enabled(6) = q.useVein;  avail(6) = true;
-    if enabled(6), setBit(5, rawMaps.vCBV > q.vein_vCBVmax); end
+    % bit 5: large vein (raw intercept vCBV), absolute or relative to the subject's tissue vCBV
+    info = struct('veinRef', NaN, 'veinThreshold', NaN, 'veinRefN', 0);
+    enabled(6) = q.useVein;
+    relVein = strcmpi(q.vein_mode, 'relative');
+    avail(6) = ~relVein || has('csfFrac');
+    if enabled(6) && avail(6)
+        if relVein
+            ok = qual.csfFrac < 1 - q.vein_refTissueMin;
+            for f = {'R2','R2P','vCBV','OEF'}
+                x = rawMaps.(f{1});
+                ok = ok & isfinite(x) & x >= physBds.(f{1})(1) & x <= physBds.(f{1})(2);
+            end
+            info.veinRefN = nnz(ok);
+            info.veinRef = median(rawMaps.vCBV(ok));
+            info.veinThreshold = q.vein_relK * info.veinRef;
+            if info.veinRefN < 100 || ~(info.veinRef > 0)
+                warning('computeVoxelQuality:veinReference', ...
+                    'Vein reference from %d tissue voxels (median vCBV %g): threshold may be unreliable.', ...
+                    info.veinRefN, info.veinRef);
+            end
+        else
+            info.veinThreshold = q.vein_vCBVmax;
+        end
+        if isfinite(info.veinThreshold), setBit(5, rawMaps.vCBV > info.veinThreshold); end
+    end
     % bit 6: z-shim estimate at the grid edge / outside the sampled moments (any echo)
     enabled(7) = q.useZshimEdge;  avail(7) = has('zshimEdge');
     if enabled(7) && avail(7), setBit(6, any(qual.zshimEdge > 0, 4)); end

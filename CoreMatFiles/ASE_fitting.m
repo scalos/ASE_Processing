@@ -389,7 +389,11 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
 
         %% voxel quality mask (uses raw, unclamped maps)
         if q.enabled
-            [qual.keep, qual.flags, qual.bitInfo] = computeVoxelQuality(rawMaps, qual, physBds, q);
+            [qual.keep, qual.flags, qual.bitInfo, qual.qInfo] = computeVoxelQuality(rawMaps, qual, physBds, q);
+            if v && q.useVein
+                fprintf('Vein criterion (%s): threshold vCBV > %.4g (reference median %.4g over %d tissue voxels)\n', ...
+                    q.vein_mode, qual.qInfo.veinThreshold, qual.qInfo.veinRef, qual.qInfo.veinRefN);
+            end
             if v
                 fprintf('Voxel quality: %d of %d voxels with a fit kept (whole FOV)\n', ...
                     nnz(qual.keep & isfinite(rawMaps.vCBV)), nnz(isfinite(rawMaps.vCBV)));
@@ -494,7 +498,8 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
             M = M .* double(vw(:).');
             if v; fprintf(['Z-shim ROI voxel weights (F^2 at worst used frame): total ROI weight %.1f%% of ' ...
                     'occupancy; %.1f%% of occupancy at weight 0 (a frame below Fcut)\n'], ...
-                    100*full(sum(M,'all'))/occTot, 100*occZero/occTot); end
+                    100*full(sum(M,'all'))/occTot, 100*occZero/occTot); 
+            end
         end
 
         if v; fprintf('Averaging signal and fitting %d regions...\n',nReg); end

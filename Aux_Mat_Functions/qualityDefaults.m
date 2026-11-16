@@ -38,8 +38,13 @@ function q = qualityDefaults(q)
     d.snr_min          = 10;      %   to calibrate
     d.useCSF           = true;    % bit 4: CSF fraction > csf_max (needs qualityMaskFiles)
     d.csf_max          = 0.2;
-    d.useVein          = true;    % bit 5: vCBV_int > vein_vCBVmax
-    d.vein_vCBVmax     = 0.15;
+    d.useVein          = true;    % bit 5: large-vein voxels (high intercept vCBV)
+    d.vein_mode        = "relative";  % "relative": vCBV > vein_relK x median tissue vCBV
+                                  %   (tissue = csfFrac < 1-vein_refTissueMin, plausible fit);
+                                  %   "absolute": vCBV > vein_vCBVmax
+    d.vein_relK        = 4;
+    d.vein_refTissueMin = 0.9;
+    d.vein_vCBVmax     = 0.15;    % absolute mode only
     d.useZshimEdge     = true;    % bit 6: Gz at grid edge / peak outside sampled moments
     d.useZshimEcho     = true;    % bit 7: |Gz_e1 - Gz_e2| > zshimEcho_maxDiff
     d.zshimEcho_maxDiff = 20;     %   uT/m, to calibrate
@@ -58,4 +63,7 @@ function q = qualityDefaults(q)
         d.(fn{i}) = q.(fn{i});
     end
     q = d;
+    q.vein_mode = string(q.vein_mode);
+    assert(any(strcmpi(q.vein_mode, ["relative","absolute"])), ...
+        'quality.vein_mode must be "relative" or "absolute" (got "%s").', q.vein_mode);
 end
