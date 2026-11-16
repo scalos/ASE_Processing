@@ -20,6 +20,8 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
                                     %   the long regime is reached late when true t_c > assumed (StO2_max); see docs Q3
         opts.averageReps = false %whether to average repetitions before fitting 
         opts.dBCorr = false %Through-slice (z-shim based) dB correction; settings in opts.quality.zshim_*
+        opts.zshimZeroFrameInFit = false %use the zero-moment frame of the trailing z-shim block in the
+                                         %regime fits (acquired minutes after the sweep; dropped by default)
         opts.tauUsePts = []; %use to restrict tau points used in all fitting operations.  ndTE x nEchos
         opts.physBd_R2 = [0,inf];
         opts.physBd_R2P = [0,inf];
@@ -103,8 +105,12 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         'tauUsePts must be ndTEs x nEchos.');
 
     % frames with a nonzero z-moment never enter the regime fits (with or without dB
-    % correction); they are only used to estimate the through-slice gradient Gz.
+    % correction); they are only used to estimate the through-slice gradient Gz. By default the
+    % whole trailing z-shim block is left out of the fits, including its zero-moment frame.
     tauUsePts(zShim~=0) = 0;
+    if ~opts.zshimZeroFrameInFit
+        tauUsePts(info.zShimInds,:) = 0;
+    end
     needZshim = opts.dBCorr || q.zshimEstimate || ...
                 (q.enabled && (q.useZshimEdge || q.useZshimEcho || q.useZshimFrac));
     if needZshim && any(isnan(info.SliceThickness_mm))

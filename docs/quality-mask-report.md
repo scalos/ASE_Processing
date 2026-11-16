@@ -1355,3 +1355,92 @@ should hold better.
 
 **Next step:** recalibrate the quality thresholds on several subjects. Set C predates the Q1–Q6
 changes.
+
+## Follow-ups from the AnLab comparison (2026-11-16)
+
+### Echo-2 motion correction
+
+**Echo-2 acquisition timing:** confirmed from the `dcm_hdr_*_dtes.txt` acquisition times.
+- Echo 2 is acquired exactly **32 ms** (= TE2 − TE1) after its echo-1 partner, in all 98 frame
+  pairs, with matching repetition indices.
+- Within a slice the two echoes' slice timing differs by 0–2.5 ms.
+- So both echoes come from the same excitation and share its head position.
+
+**Problem:** `asePreProcess.sh` registered echo 2 to the echo-1 base independently, with 3dvolreg
+(least squares, across TE 93 vs 61 ms).
+- Mean echo-2 vs echo-1 motion-parameter difference: 0.44° pitch, 0.43 mm superior, 0.37 mm
+  posterior.
+- That is cross-contrast registration error, not motion.
+
+**Change:** new pipeline key `motionMode`.
+- **`echo1` (default):** 3dvolreg on echo 1 only. Its per-frame transforms are saved
+  (`motionMatName`) and applied to the other echoes with `3dAllineate -1Dmatrix_apply`
+  (`motionApplyInterp` = wsinc5). The echo-2 `_mc.1D` is a copy of echo 1's.
+- **`perEcho`:** the old behaviour.
+- **Existing subjects** are not reprocessed unless run with `--regenMotion`.
+- **Output size:** echo 2's output is now float, about 2× larger on disk.
+
+**Checks:**
+- **Transform convention:** applying the saved transforms to echo 1 with 3dAllineate reproduces
+  3dvolreg's echo-1 output (r = 0.99992, p95 difference 1.3%).
+- Echo 1's output is bit-identical to before.
+- **Echo-2 tissue intensity change against raw:** median 3.28% before, **1.27%** now (echo 1:
+  0.85%).
+
+### Z-shim frame 96
+
+**Change:** the zero-moment frame of the trailing z-shim block (raw frame 96, dTE 44 ms) is
+acquired about 5 minutes after the sweep. It is now left out of the regime fits by default
+(`zshimZeroFrameInFit` = false), as AnLab does. The Gz estimate still uses it.
+
+**Check:** the default reproduces a manual `tauUsePts` exclusion exactly (31 of 31 maps
+identical).
+
+### Effects
+
+Scratch subject, current defaults, buffer [3, 12]:
+
+| run | R2′ WM / ctx | vCBV WM / ctx | OEF WM / ctx | echo R2′ gap (WM) | ROIs with OEF; ROI medians OEF / R2′ / vCBV |
+|---|---|---|---|---|---|
+| old motion, no dBCorr | 6.21 / 8.51 | 0.133 / 0.161 | 0.206 / 0.206 | 21.5% | 143; 0.249 / 9.23 / 0.140 |
+| new motion, no dBCorr | 6.05 / 8.29 | 0.126 / 0.152 | 0.210 / 0.210 | 20.2% | 143; 0.249 / 9.16 / 0.138 |
+| + frame 96 dropped | 6.05 / 8.30 | 0.126 / 0.152 | 0.210 / 0.211 | 18.6% | 143; 0.249 / 9.17 / 0.138 |
+| old motion, dBCorr | 4.69 / 5.79 | 0.100 / 0.113 | 0.210 / 0.209 | 19.0% | 154; 0.238 / 6.15 / 0.112 |
+| new motion, dBCorr | 4.58 / 5.68 | 0.096 / 0.107 | 0.214 / 0.216 | 17.6% | 156; 0.237 / 6.20 / 0.115 |
+| + frame 96 dropped | 4.58 / 5.69 | 0.096 / 0.107 | 0.215 / 0.217 | 15.6% | 156; 0.238 / 6.20 / 0.114 |
+
+**Motion change:**
+- vCBV −5%, R2′ −2.5%, OEF +2%.
+- The echo gap shrinks by 1.3–1.4 points.
+- This is consistent with the AnLab comparison, where 3dvolreg added about 4 points of vCBV
+  relative to mcflirt.
+- ROI changes per region: OEF median ±0.004 [IQR ±0.01].
+
+**Frame 96 change:** the maps and ROIs barely change (ROI OEF +0.0008), but the echo gap shrinks
+by another 1.6–2 points.
+
+**Interaction with earlier analyses:** together, these two changes remove about 3.5 points of the
+echo-1 vs echo-2 R2′ gap from Q3 (WM, with dBCorr: 19.0% → 15.6%). The rest remains consistent
+with the regime-transition analysis.
+
+**Scratch state:** the scratch subject now holds the new motion-corrected data. The Phase 0
+baseline fit was made with the old ones.
+
+### AnLab fitting steps not adopted (decided 2026-11-16)
+
+Robust (bisquare) regression and pre-fit smoothing are **left out for now.**
+
+- **Robust regression:**
+  - It moves medians by about 1.5–2 points.
+  - Its benefit concentrates in poorly fitted voxels, which the quality mask now excludes.
+  - It is incompatible with the F²-weighted least squares and with the analytic SEs (vCBV SE,
+    vCBV z, SE(k)) behind bits 1 and 2.
+- **Smoothing:**
+  - ROI values already come from region-averaged signal.
+  - Smoothing mixes signal across tissue boundaries: the AnLab vCBV gap rises from +8% at no CSF
+    to +72–101% above 25% CSF.
+  - It would also blur the per-voxel quality flags.
+- **Both are small** next to the fitting-window dependence of vCBV/OEF, which is the open
+  full-model question.
+- **If comparability with AnLab-processed data is needed later:** add an AnLab-compatible preset
+  rather than changing the defaults.
