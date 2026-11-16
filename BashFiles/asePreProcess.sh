@@ -5,7 +5,10 @@
 #   1. convert dicoms -> 4D nifti (all frames, acquisition order) + dcm2niix json sidecar; de-oblique
 #   2. build the dTE / z-moment / image-comment header (separate script, see commentScript)
 #   3. build the combined json header (all echos)
-#   4. motion correct (3dvolreg) -> <aseProcName>
+#   4. motion correct -> <aseProcName>. motionMode=echo1 (default): 3dvolreg on echo 1 only, and
+#      the same per-frame transforms applied to the other echoes (all echoes of a frame come from
+#      the same excitation, so they share its head position; avoids cross-TE registration).
+#      motionMode=perEcho: 3dvolreg on each echo against the echo-1 base (legacy).
 #   5. transfer anatomical/segmentation volumes from transferSrcDir (+orig -> nifti)   [if missing]
 #   6. register ase_base to the anatomical (3dAllineate) and make the inverse matrix   [if missing]
 #   7. transform segmentations into ASE space (nearest neighbor)
@@ -39,6 +42,9 @@ aseProcName="ase_e%ECHO%_proc.nii.gz"
 motionParamName="ase_e%ECHO%_mc.1D"
 hdrFileName=ase_hdr.json
 volregOpts="-Fourier -twopass -twodup"
+motionMode="echo1"                  # echo1 | perEcho (see stage 4)
+motionMatName="ase_e1_mc_mat.aff12.1D"   # echo-1 per-frame transforms (motionMode=echo1)
+motionApplyInterp="wsinc5"          # 3dAllineate -final for echoes > 1 (motionMode=echo1)
 baseName=ase_base.nii.gz
 baseFrame=0
 baseAlName=ase_base_al.nii.gz
@@ -60,7 +66,7 @@ posteriorNonTissueVols="0,3,4,11,12,16,21,22"      # 0-based sub-bricks: backgro
                                                    #   3rd, 4th vent, CSF (label 24), R lat/inf-lat vent
 posteriorNVols=33                                  # expected sub-bricks (SynthSeg standard label set)
 
-pipelineKeys="allSubjDir dataList echo1Col echoSpacing nEchos aseSubjDir rawDataDir dcmIndexFile scannerCode commentScript dcm2niixMinFiles dimonOpts rawNii pattern_dicomHdr pattern_dteHdr aseProcName motionParamName hdrFileName volregOpts baseName baseFrame baseAlName regBaseName allineateOpts tformName tformApplyName transferSrcDir transferNames segNames segSuffix qualityMaskNames tissuePosteriorName tissueFracName posteriorNonTissueVols posteriorNVols"
+pipelineKeys="allSubjDir dataList echo1Col echoSpacing nEchos aseSubjDir rawDataDir dcmIndexFile scannerCode commentScript dcm2niixMinFiles dimonOpts rawNii pattern_dicomHdr pattern_dteHdr aseProcName motionParamName hdrFileName volregOpts motionMode motionMatName motionApplyInterp baseName baseFrame baseAlName regBaseName allineateOpts tformName tformApplyName transferSrcDir transferNames segNames segSuffix qualityMaskNames tissuePosteriorName tissueFracName posteriorNonTissueVols posteriorNVols"
 
 # regeneration / logging / retry
 regenNifti=0; regenComments=0; regenHdr=0; regenMotion=0
@@ -265,6 +271,7 @@ avail() {
 
 # tools
 needTools="dcm2niix 3dinfo 3drefit 3dvolreg 3dcalc"
+[[ $motionMode == echo1 ]] && ((nEchos > 1)) && needTools+=" 3dAllineate"
 ((nSeg > 0)) && needTools+=" 3dAllineate cat_matvec 3dAFNItoNIFTI"
 for t in $needTools; do
 	if ! command -v "$t" > /dev/null 2>&1; then echo "Error: $t not found on PATH" >&2; exit 1; fi
@@ -323,6 +330,12 @@ check_subject() {
 			fi
 		fi
 	done
+
+	if [[ $motionMode == echo1 ]] && ((anyMotion == 1)); then
+		# echoes > 1 reuse echo 1's transforms, so all echoes are redone together. Existing outputs
+		# (e.g. from motionMode=perEcho) are left alone unless regenerated with --regenMotion.
+		for ((ei = 0; ei < nEchos; ei++)); do doMotionE[ei]=1; done
+	fi
 
 	if ((anyComm == 1)); then
 		if [[ -z $commentScriptPath || ! -x $commentScriptPath ]]; then
@@ -614,6 +627,42 @@ stage_header() {
 }
 
 # base volume for motion correction / registration: frame <baseFrame> of echo 1 (created only if missing)
+# motionMode=echo1: estimate motion on echo 1, apply the same per-frame transforms to all echoes
+stage_motion_echo1() {
+	local ei series nii proc mc mc1
+	series=${echoNums[0]}
+	nii=$(subst_series "$rawNii" "$series")
+	proc=$(subst_echo "$aseProcName" 1)
+	mc1=$(subst_echo "$motionParamName" 1)
+	echo "[$subjID] Motion correcting echo 1 -> $proc (transforms -> $motionMatName)"
+	rm -f "$mc1" "$motionMatName"
+	if ! 3dvolreg $volregOpts -base "$baseName" -dfile "$mc1" -1Dmatrix_save "$motionMatName" \
+			-prefix "$proc" -overwrite "$nii"; then
+		rm -f "$proc" "$mc1" "$motionMatName"
+		procErr+="  - 3dvolreg failed for $nii${nl}"; return 1
+	fi
+	if [[ ! -e $proc || ! -s $motionMatName ]]; then
+		procErr+="  - expected output not found after 3dvolreg: $proc / $motionMatName${nl}"; return 1
+	fi
+	for ((ei = 1; ei < nEchos; ei++)); do
+		series=${echoNums[ei]}
+		nii=$(subst_series "$rawNii" "$series")
+		proc=$(subst_echo "$aseProcName" "$((ei + 1))")
+		mc=$(subst_echo "$motionParamName" "$((ei + 1))")
+		if [[ $(3dinfo -nv "$nii" 2>/dev/null) != $(3dinfo -nv "$(subst_series "$rawNii" "${echoNums[0]}")" 2>/dev/null) ]]; then
+			procErr+="  - echo $((ei + 1)) has a different number of frames than echo 1; cannot reuse its transforms${nl}"; return 1
+		fi
+		echo "[$subjID] Applying echo-1 transforms to echo $((ei + 1)) -> $proc ($motionApplyInterp)"
+		if ! 3dAllineate -1Dmatrix_apply "$motionMatName" -source "$nii" -master "$baseName" \
+				-final "$motionApplyInterp" -prefix "$proc" -overwrite; then
+			rm -f "$proc"
+			procErr+="  - 3dAllineate (apply echo-1 motion) failed for $nii${nl}"; return 1
+		fi
+		cp -f "$mc1" "$mc"                     # same motion as echo 1, by construction
+	done
+	return 0
+}
+
 ensure_base() {
 	local nii1
 	[[ -e $baseName ]] && return 0
@@ -630,6 +679,11 @@ stage_motion() {
 	local ei series nii proc mc
 	((anyMotion == 1)) || return 0
 	ensure_base || return 1
+	case $motionMode in
+		echo1)   stage_motion_echo1; return ;;
+		perEcho) ;;
+		*) procErr+="  - unknown motionMode '$motionMode' (echo1 | perEcho)${nl}"; return 1 ;;
+	esac
 	for ((ei = 0; ei < nEchos; ei++)); do
 		((doMotionE[ei] == 1)) || continue
 		series=${echoNums[ei]}
