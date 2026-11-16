@@ -57,7 +57,7 @@ function makeDocFigures(hdrFile, outDir, opts)
     annotation_arrow(ax, tcrit, lo, ya, ink2);  text(ax, lo - 0.6, ya, sprintf('−%g ms', opts.tCrit_buffer(1)), 'HorizontalAlignment','right','FontSize',12,'Color',ink2);
     annotation_arrow(ax, tcrit, hi, ya, ink2);  text(ax, (tcrit+hi)/2 + 0.6, ya+0.14, sprintf('+%g ms', opts.tCrit_buffer(2)), 'HorizontalAlignment','center','FontSize',12,'Color',ink2);
     text(ax, lo/2, 0.5, 'short regime', 'HorizontalAlignment','center','FontSize',13,'Color',cShort*0.8,'FontWeight','bold');
-    text(ax, (lo+hi)/2, 0.5, 'excluded', 'HorizontalAlignment','center','FontSize',13,'Color',ink2,'FontWeight','bold');
+    text(ax, (tcrit+hi)/2, 0.5, 'excluded', 'HorizontalAlignment','center','FontSize',13,'Color',ink2,'FontWeight','bold');
     text(ax, (hi+xl(2))/2, 0.5, 'long regime', 'HorizontalAlignment','center','FontSize',13,'Color',cLong*0.85,'FontWeight','bold');
     text(ax, TEs(2)-TEs(1), 1.75, sprintf('echo 2 starts at τ = TE_2 − TE_1 = %.0f ms', TEs(2)-TEs(1)), 'FontSize',12, 'Color',ink2, 'HorizontalAlignment','left');
 

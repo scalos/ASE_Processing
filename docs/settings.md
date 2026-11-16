@@ -35,7 +35,8 @@ Every setting lives in `BashFiles/ase_config.json`. Precedence: script defaults 
 | `tissuePosteriorName` | `""` (off) | optional SynthSeg posteriors (e.g. `anat_fs_al_posteriors.nii.gz`) for an alternative tissue fraction |
 | `tissueFracName`, `posteriorNonTissueVols`, `posteriorNVols` | `anat_fs_tissueFrac_al.nii.gz`, `0,3,4,11,12,16,21,22`, 33 | SynthSeg tissue fraction = 1 − (background + CSF + ventricles). To use it, also set `qualityMaskNames` to `tissueFracName`. |
 | `fitsSubdir`, `outPref` | `fits`, `ase_fit_results` | output folder (`<subject>/<aseSubjDir>/<fitsSubdir>/<timestamp>/`) and file prefix |
-| `matlabBin`, `matdir`, `B0` | `matlab`, repo, header value | MATLAB location; `B0` overrides the header's field strength |
+| `matlabBin`, `matdir` | `matlab`, repo | MATLAB location |
+| **`B0`** | null = header `B0_T` (changed) | field strength (T) for t_crit and the OEF scale. By default the **actual** field from each subject's header, `B0_T` = ImagingFrequency / 42.577478518 MHz/T, written by `asePreProcess.sh`. It used to be the nominal `MagneticFieldStrength` (3). Set a number (or `aseFit.sh --B0`) to override. Headers without `B0_T` are rejected: rerun `asePreProcess.sh --regenHdr`. |
 
 **Re-running preprocessing stages:** `--regenNifti`, `--regenComments`, `--regenHdr`, `--regenMotion`, `--regenTransfer`, `--regenRegister`, `--regenTransform`. Each one also forces the stages downstream of it. Without them, existing outputs are kept.
 
