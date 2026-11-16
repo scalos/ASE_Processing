@@ -30,7 +30,7 @@ end
 
 function testEachBitIsolated(tc)
     [raw, qual, bds] = cleanInputs();
-    q = qualityDefaults(struct('enabled',true));
+    q = qualityDefaults(struct('enabled',true,'useR2PEcho',true));   % bit 9 is off by default
     [keep, flags, info] = computeVoxelQuality(raw, qual, bds, q);
     tc.verifyEqual(flags(1), uint16(0));
     tc.verifyTrue(keep(1));

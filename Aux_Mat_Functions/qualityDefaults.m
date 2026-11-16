@@ -45,7 +45,8 @@ function q = qualityDefaults(q)
     d.zshimEcho_maxDiff = 20;     %   uT/m, to calibrate
     d.useZshimFrac     = true;    % bit 8: fraction of long frames with F < Fmin > zshimFrac_max
     d.zshimFrac_max    = 0.3;
-    d.useR2PEcho       = true;    % bit 9: per-echo R2' F-test p < r2pEcho_pMax
+    d.useR2PEcho       = false;   % bit 9: per-echo R2' F-test p < r2pEcho_pMax (off: flags a systematic
+                                  %   echo-1 vs echo-2 R2' difference, not bad voxels; see report Q3)
     d.r2pEcho_pMax     = 0.01;    %   to calibrate
 
     fn = fieldnames(q);

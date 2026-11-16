@@ -85,7 +85,7 @@
       "zshimEcho_maxDiff": 20,
       "useZshimFrac": true,
       "zshimFrac_max": 0.3,
-      "useR2PEcho": true,
+      "useR2PEcho": false,
       "r2pEcho_pMax": 0.01
     }
   }
