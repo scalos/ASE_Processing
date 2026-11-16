@@ -1153,3 +1153,56 @@ defines the ROIs and needs no extra input. ROI values barely depend on the choic
   - It is rebuilt only when missing or on `--regenTransfer`.
 - **Tested on scratch:** the default run is a no-op, and the opt-in run builds and resamples the
   fraction.
+
+### vCBV scale vs An & Lin 2003 (discussion during Q5)
+
+**Question:** pipeline vCBV (9–16%) is about 3× the published ASE values (An & Lin 2003, MRM
+50:708). Is the difference in acquisition or in analysis?
+
+**The paper**, read from `../literature/An_2003.pdf`:
+- **Acquisition:** 3T Allegra, 3 mm isotropic, single echo (TE 62 ms), 3×3 low-pass filter.
+- **Flow suppression:** diffusion gradients, b = 13–120 s/mm² (Venc 0.3–1 cm/s).
+- **Fit:** linear long-regime fit over dephasing times 20–40 ms. vCBV = extrapolated line at 0
+  minus ln(mean spin echo).
+- **ROIs:** hand-drawn GM/WM on 3 slices, artifact regions excluded.
+- **Values from the figures** (approximate):
+  - vCBV with flow suppression: WM 3.0–3.4%, GM 4.0–4.2%. Without suppression (b = 0):
+    3.6% / 5.0%.
+  - OEF 35–40%.
+  - R2′: WM 2.6, GM 3.5 s⁻¹.
+- **So:** by the paper's own numbers, intravascular signal adds only about 0.5–1 point of vCBV.
+
+**Refit of this subject with the paper's design:** `Scripts/anLin2003DesignFit.m`. Masks are
+clean deep WM, WM and cortex, each with tissue fraction > 0.9.
+
+| analysis | vCBV cWM / WM / ctx | R2′ cWM / WM / ctx | OEF cWM / WM / ctx |
+|---|---|---|---|
+| paper design (echo 1, 20–40 ms), raw | 4.7 / 5.8 / 8.0% | 3.4 / 4.0 / 5.7 | 0.34 / 0.32 / 0.30 |
+| + z-shim correction (F², as dBCorr) | 4.1 / 4.5 / 6.0% | 3.0 / 3.1 / 4.2 | 0.34 / 0.31 / 0.29 |
+| paper design, window 30–44 ms, raw | 7.4 / 9.1 / 11.8% | 4.1 / 5.0 / 6.9 | 0.26 / 0.25 / 0.24 |
+| pipeline defaults ([3,12], 2 echoes), no dBCorr | 11.1 / 13.3 / 16.1% | 5.2 / 6.2 / 8.5 | 0.22 / 0.21 / 0.21 |
+| pipeline defaults, dBCorr | 8.8 / 10.0 / 11.3% | 4.3 / 4.7 / 5.8 | 0.23 / 0.21 / 0.21 |
+
+The 3×3 smoothing changes nothing material.
+
+**Conclusions:**
+- **With the paper's analysis, this dataset gives values close to the paper's.** The roughly
+  3× gap comes mostly from the analysis, not the acquisition.
+- **Correction of an earlier inference:** AnLab's current code agreeing with the pipeline meant
+  the data were responsible. It doesn't, because that code uses a multi-echo design like ours,
+  not the 2003 single-echo fit.
+- **The dephasing-time window drives absolute vCBV and OEF.**
+  - vCBV goes about 4% (20–40 ms) → 6–7% (30–44 ms) → 9–11% (pipeline, out to 76 ms, both
+    echoes).
+  - OEF goes 0.34 → 0.25 → 0.22.
+  - ln S keeps steepening across 20–76 ms. This is the same effect as the Q3 echo gap.
+- **Which window is right isn't decidable within the regime-split method:**
+  - Static-dephasing theory (`regimeBoundarySim`) says early windows underestimate vCBV and
+    overestimate OEF when the true t_c is long.
+  - The continued steepening into echo 2 suggests an extra decay that the model doesn't include
+    (macroscopic in-voxel gradients, diffusion), and that would bias late windows the other way.
+  - This strengthens the case for a full-model fit (open project).
+- **Acquisition notes for future scans** are real but secondary:
+  - No flow suppression adds about +15–25% vCBV, per the paper's Fig. 4.
+  - 4.8 mm slices give more through-slice dephasing. With the paper's design, z-shim
+    correction lowered vCBV from 4.7% to 4.1%.
