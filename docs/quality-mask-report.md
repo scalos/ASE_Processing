@@ -1342,3 +1342,16 @@ several subjects is the next step. The quality mask stays off by default until t
 **Decision:** per-echo stays the default; the joint fit is available as an option. It may be
 worth re-evaluating with thinner slices in future scans, where the linear through-slice model
 should hold better.
+
+### Q8 — Housekeeping (2026-11-16)
+
+- **Reasoning documents:** none exist. The action plan is the only plan file.
+- **Deleted:** the pre-existing `testData/scratch/bch046_250816/` (approved).
+- **Kept for the recalibration step:**
+  - `testData/scratch/qm/`: the scratch subject, the Phase 0 baseline and
+    `diag/aseg_asegrid.nii.gz`.
+  - `~/.claude/overnight_qm/`: the diagnostic scripts, including `run_fit.sh`.
+- **Branch:** `quality-mask` pushed to origin for a PR to `main`.
+
+**Next step:** recalibrate the quality thresholds on several subjects. Set C predates the Q1–Q6
+changes.
