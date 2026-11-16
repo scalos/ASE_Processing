@@ -16,6 +16,14 @@ function T = regimeBoundarySim(opts)
 %   regimeBoundarySim('oef',[0.18 0.20 0.25 0.35 0.45], 'buffers',[3 3; 3 6; 3 9; 3 12; 3 15; 6 3; 1 3])
 %   regimeBoundarySim('StO2_max',0.8, 'buffers',[3 3])
 %
+% Noise (nMC > 0): Monte-Carlo with Gaussian noise of SD 1 on the magnitude signal, scaled so
+% that echo-1 SNR at tau = 0 is opts.SNR, and every tau frame acquired nReps times (as the
+% stacked, unaveraged fit). The same noise realisations are used for every buffer/StO2_max
+% at a given (zeta, OEF), so settings are compared pairwise. Reported per quantity:
+%   med*  : median relative error (%)        sd*  : robust SD (IQR/1.349) relative to truth (%)
+%   rmse* : sqrt(med^2 + sd^2) (%)           failOEF : fraction with no finite OEF
+%   regimeBoundarySim('nMC',5000,'SNR',100,'StO2_max',0.7,'buffers',[3 3])
+%
 % Output table: one row per (zeta, OEF, buffer) with fitted values and relative errors (%).
 % Needs CoreMatFiles on the path (fitMultiRegressor).
     arguments
@@ -31,6 +39,10 @@ function T = regimeBoundarySim(opts)
         opts.Hct_correction (1,1) double = 0.85
         opts.dChi_0 (1,1) double = 0.18e-6
         opts.verbose (1,1) logical = true
+        opts.nMC (1,1) double = 0                                  % 0 = noise-free only
+        opts.SNR (1,1) double = 100                                % echo-1, tau = 0, per acquisition
+        opts.nReps (1,1) double = 2
+        opts.seed (1,1) double = 1
     end
     gamma = 2.67502e8;
     oefScale = (4/3)*pi*gamma*opts.dChi_0*opts.Hct*opts.Hct_correction*opts.B0;
@@ -81,11 +93,40 @@ function T = regimeBoundarySim(opts)
                 fprintf('  [%2g %2g]   %4d   %4d      | %5.2f  %5.2f  %5.1f | %+6.1f %+6.1f %+6.1f %+6.1f\n', ...
                     opts.buffers(b,:), nnz(sh), nnz(lg & echo==1), r(1), r(2), gap, err);
             end
+            mc = NaN(1,10);
+            if opts.nMC > 0
+                mc = noiseMC(lnS, tau, TE, sh, lg, opts, zeta, oef, oefScale, R2P);
+                if opts.verbose
+                    fprintf('            noise (SNR %g, %d reps): OEF med %+5.1f sd %5.1f rmse %5.1f fail %4.1f%% | vCBV med %+5.1f sd %5.1f | R2 sd %4.1f | R2'' sd %4.1f\n', ...
+                        opts.SNR, opts.nReps, mc(1), mc(2), mc(3), 100*mc(4), mc(5), mc(6), mc(8), mc(10));
+                end
+            end
             rows(end+1,:) = {zeta, oef, 1000/dw, opts.buffers(b,1), opts.buffers(b,2), nnz(sh), ...
-                nnz(lg & echo==1), r(1), r(2), gap, err(1), err(2), err(3), err(4)}; %#ok<AGROW>
+                nnz(lg & echo==1), r(1), r(2), gap, err(1), err(2), err(3), err(4), ...
+                mc(1), mc(2), mc(3), mc(4), mc(5), mc(6), mc(7), mc(8), mc(9), mc(10)}; %#ok<AGROW>
         end
     end
     end
     T = cell2table(rows, 'VariableNames', {'zeta','OEF','tc_true_ms','bufBelow','bufAbove', ...
-        'nShort','nLongEcho1','R2P_e1','R2P_e2','echoGapPct','errR2P','errR2','errVCBV','errOEF'});
+        'nShort','nLongEcho1','R2P_e1','R2P_e2','echoGapPct','errR2P','errR2','errVCBV','errOEF', ...
+        'medOEF','sdOEF','rmseOEF','failOEF','medVCBV','sdVCBV','medR2','sdR2','medR2P','sdR2P'});
+end
+
+function mc = noiseMC(lnS, tau, TE, sh, lg, opts, zeta, oef, oefScale, R2P)
+% Monte-Carlo fit of noisy data; same realisations for every call with the same seed/OEF/zeta.
+    rng(opts.seed + round(1e4*oef) + round(1e6*zeta));
+    S = exp(lnS - lnS(1)) * opts.SNR;                       % echo-1 tau=0 -> SNR (sigma = 1)
+    nF = numel(S);  nR = opts.nReps;
+    Y = repmat(S.', opts.nMC, nR) + randn(opts.nMC, nF*nR);  % frames: [rep1 frames, rep2 frames, ...]
+    Y = reshape(Y, opts.nMC, 1, 1, []);
+    rep = @(v) repmat(v, nR, 1);
+    tauR = rep(tau);  TER = rep(TE);  shR = rep(sh);  lgR = rep(lg);
+    BL = fitMultiRegressor(Y(:,:,:,lgR), [ones(nnz(lgR),1), -TER(lgR), -tauR(lgR)]);
+    modS = Y(:,:,:,shR) .* exp(BL(:,:,:,2) .* reshape(TER(shR),1,1,1,[]));
+    BS = fitMultiRegressor(modS, [ones(nnz(shR),1), tauR(shR).^2]);
+    vC = BL(:,:,:,1) - BS(:,:,:,1);  r2p = BL(:,:,:,3);  r2 = BL(:,:,:,2);
+    O = r2p ./ (vC*oefScale);  O(vC <= 0 | r2p <= 0) = NaN;     % as in fitASERegimes
+    st = @(x, t) [100*(median(x(:),'omitnan')/t - 1), 100*iqr(x(:))/1.349/t];
+    so = st(O, oef);  sv = st(vC, zeta);  s2 = st(r2, opts.R2);  sp = st(r2p, R2P);
+    mc = [so(1), so(2), hypot(so(1), so(2)), mean(~isfinite(O(:))), sv, s2, sp];
 end

@@ -43,7 +43,8 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         opts.Hct = 0.42
         opts.Hct_correction = 0.85;
         opts.dChi_0 = 0.18*1e-6;   % sus. diff. between oxy and deoxy blood
-        opts.StO2_max = 0.60        % max expected StO2
+        opts.StO2_max = 0.60        % max expected StO2 (sets t_crit only). REVISIT: 0.6 is a typical, not a
+                                    %   maximal, venous Y; see docs/quality-mask-report.md (Q3, StO2_max)
 
         % Write options:
         opts.outPref = './ase_fitting_results'

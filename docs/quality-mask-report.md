@@ -1075,3 +1075,38 @@ What the table shows:
   change.
 - **A floor of about 5% at high OEF remains** in every setting. There, the short frames
   (≤ 14 ms) run past the true t_c (9–12 ms).
+
+**StO2_max with noise** (`regimeBoundarySim(..., 'nMC',5000)`):
+- Gaussian noise; each τ frame acquired 2 times.
+- **SNR:** echo-1 SNR at τ = 0 is 100 (typical tissue in this subject) or 50.
+- **Columns:** voxel-level OEF bias / robust SD / RMSE, all in % of truth.
+- **The model checks out:** at SNR 1e5 it reproduces the noise-free numbers.
+
+SNR 100, ζ = 0.04:
+
+| setting | true OEF 0.20 | 0.30 | 0.40 | vCBV SD @0.20 |
+|---|---|---|---|---|
+| 0.6 [3,3] (old) | +27 / 15 / 31 | +7 / 11 / 13 | +5 / 12 / 13 | 12 |
+| **0.6 [3,12] (default)** | +18 / 15 / 23 | +3 / 11 / 12 | +5 / 14 / 15 | 14 |
+| 0.7 [3,3] | +20 / 13 / 24 | +3 / 10 / 11 | +4 / 12 / 13 | 13 |
+| 0.7 [3,6] | +18 / 14 / 22 | +2 / 11 / 11 | +5 / 13 / 14 | 14 |
+| 0.8 [3,3] | +11 / 14 / 18 | 0 / 13 / 13 | +5 / 18 / 19 | 18 |
+
+At SNR 50 and at ζ = 0.06, the ranking is the same, and the SD scales roughly as 1/SNR and 1/ζ.
+Failed fits are under 1% everywhere.
+
+**Conclusion:** keep StO2_max = 0.6, and flag it for revisiting. A comment next to the option
+in `ASE_fitting.m` marks it.
+- **At voxel level, no setting wins clearly.**
+  - StO2_max = 0.7 is about equivalent to the new buffer default.
+  - 0.8 trades about 9 points of bias at OEF 0.2 for about 50% more SD at OEF 0.4.
+  - Net RMSE differences are a few points.
+- **At ROI level the picture is different.** Averaging over hundreds of voxels removes most of
+  the noise, so bias dominates. There, 0.8 [3,3] would cut the low-OEF bias from 18% to 11% at
+  no cost in accuracy at high OEF.
+- **What would justify revisiting:**
+  - A cohort with systematically low OEF or low Hct.
+  - Group comparisons across OEF levels. The bias depends on OEF, so it compresses
+    differences: true 0.20 vs 0.40 reads as about 0.235 vs 0.42 with the current default.
+- **No setting removes the bias.** About 10% at low OEF and 4–5% at high OEF remains with every
+  regime split. The real fix is fitting the full static-dephasing model.
