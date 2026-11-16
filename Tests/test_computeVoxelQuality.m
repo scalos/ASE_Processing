@@ -14,10 +14,10 @@ function [raw, qual, bds] = cleanInputs()
     raw = struct('R2',12*ones(sz),'R2P',5*ones(sz),'vCBV',0.04*ones(sz),'OEF',0.3*ones(sz));
     qual = struct('SNR',100*ones([sz 2]),'csfFrac',zeros(sz),'Gz',zeros([sz 2]), ...
                   'zshimEdge',zeros([sz 2]),'zshimFracLow',zeros(sz),'vCBV_quad',0.04*ones(sz), ...
-                  'vCBV_z',zeros(sz),'R2P_pval',0.5*ones(sz));
+                  'vCBV_z',zeros(sz),'kZ',-5*ones(sz),'R2P_pval',0.5*ones(sz));
     bds = struct('R2',[0 Inf],'R2P',[0 Inf],'vCBV',[0 1],'OEF',[0 1]);
     raw.OEF(2) = 1.5;              % bit 0
-    qual.vCBV_quad(3) = NaN;       % bit 1 (k >= 0)
+    qual.kZ(3) = 3;                % bit 1 (k significantly >= 0)
     qual.vCBV_z(4) = -4;           % bit 2
     qual.SNR(5,1,1,2) = 5;         % bit 3 (echo 2 only)
     qual.csfFrac(6) = 0.5;         % bit 4

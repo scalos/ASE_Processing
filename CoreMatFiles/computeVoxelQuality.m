@@ -4,7 +4,7 @@ function [keep, flags, bitInfo, info] = computeVoxelQuality(rawMaps, qual, physB
 %   rawMaps : struct with raw (unclamped) voxel maps R2, R2P, vCBV, OEF (X x Y x Z)
 %   qual    : struct of quality diagnostics (any subset of):
 %               SNR (X x Y x Z x nEchos), csfFrac, Gz (x nEchos), zshimEdge (x nEchos),
-%               zshimFracLow, vCBV_quad, vCBV_z, R2P_pval
+%               zshimFracLow, vCBV_quad, vCBV_z, kZ (k/SE_k), R2P_pval
 %   physBds : struct with [lo hi] bounds per map (fields R2, R2P, vCBV, OEF)
 %   q       : resolved quality options (qualityDefaults)
 %
@@ -61,9 +61,10 @@ function [keep, flags, bitInfo, info] = computeVoxelQuality(rawMaps, qual, physB
         end
         setBit(0, bad);
     end
-    % bit 1: short-regime curvature has the wrong sign (k >= 0) or vCBV_quad <= 0
-    enabled(2) = q.useQuadSign;  avail(2) = has('vCBV_quad');
-    if enabled(2) && avail(2), setBit(1, ~(qual.vCBV_quad > 0)); end
+    % bit 1: short-regime curvature significantly of the wrong sign: k/SE(k) > quadSign_kZmin
+    % (k should be < 0; noise alone gives k >= 0 in many voxels, so plain k >= 0 is not used)
+    enabled(2) = q.useQuadSign;  avail(2) = has('kZ');
+    if enabled(2) && avail(2), setBit(1, qual.kZ > q.quadSign_kZmin); end
     % bit 2: vCBV_int vs vCBV_quad disagreement
     enabled(3) = q.useVcbvZ;  avail(3) = has('vCBV_z');
     if enabled(3) && avail(3), setBit(2, abs(qual.vCBV_z) > q.vcbvZ_max); end

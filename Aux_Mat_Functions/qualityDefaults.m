@@ -31,7 +31,8 @@ function q = qualityDefaults(q)
     d.minVoxKept       = 5;       % effective voxels; fewer -> region values NaN
     % ---- criteria (bit = position in quality flags, 0-based) ----
     d.useBounds        = true;    % bit 0: implausible raw values (physBd_* bounds)
-    d.useQuadSign      = true;    % bit 1: k >= 0 or vCBV_quad <= 0
+    d.useQuadSign      = true;    % bit 1: short-regime curvature k significantly >= 0:
+    d.quadSign_kZmin   = 2;       %   k/SE(k) > quadSign_kZmin (0 = any k > 0)
     d.useVcbvZ         = true;    % bit 2: |z(vCBV_int - vCBV_quad)| > vcbvZ_max
     d.vcbvZ_max        = 3;       %   to calibrate
     d.useSNR           = true;    % bit 3: SNR < snr_min

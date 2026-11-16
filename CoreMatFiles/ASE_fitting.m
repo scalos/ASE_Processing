@@ -377,6 +377,7 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
                     'wL',wLong,'wS',wShort);
                 c = vcbvConsistency(ase_long, ase_short, fitRes.XL, fitRes.XS, fitRes.TES, fitRes, sigLog);
                 qual.vCBV_SE = c.SE_int;  qual.vCBVquad_SE = c.SE_quad;  qual.vCBV_z = c.z;
+                qual.k_SE = c.SE_k;  qual.kZ = c.kZ;
             else
                 warning('Short regime has no tau^2 column: vCBV_quad / vCBV_z not computed.');
             end
@@ -616,7 +617,7 @@ function resolvedPaths = writeQualityMaps(qual, templateHdr, outPref, nEchos, ov
                 'verbose',v, 'overwrite',overwrite, 'mapName',key);
         end
     end
-    single = {'qualityMask','qualityFlags','csfFrac','zshimFracLow','vCBV_quad','vCBV_SE','vCBVquad_SE','vCBV_z','R2P_e1','R2P_e2','R2P_Fstat'};
+    single = {'qualityMask','qualityFlags','csfFrac','zshimFracLow','vCBV_quad','vCBV_SE','vCBVquad_SE','vCBV_z','kZ','R2P_e1','R2P_e2','R2P_Fstat'};
     for i = 1:numel(single)
         nm = single{i};
         if ~isfield(qual,nm) || isempty(qual.(nm)), continue; end

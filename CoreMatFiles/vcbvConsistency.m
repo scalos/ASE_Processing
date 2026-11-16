@@ -23,7 +23,9 @@ function out = vcbvConsistency(aseLong, aseShort, XL, XS, TEsShort, fitRes, sigL
 %   vCBV_quad = -0.3 R2'^2 / k,  R2' = P_L(end,:) yL,  k = P_S(2,:) (yS + R2*TE_S)
 % Var(.) = sum_f g_f^2 sigLog_f^2 for the gradient g of each quantity w.r.t. the log data.
 %
-% out: SE_int, SE_quad, z (= (vCBV_int - vCBV_quad)/SE(diff)), all X x Y x Z
+% out: SE_int, SE_quad, z (= (vCBV_int - vCBV_quad)/SE(diff)) where k < 0, and SE_k (SE of the
+%      short-regime curvature k, incl. the R2 coupling) and kZ = k/SE_k wherever k is finite;
+%      all X x Y x Z
     arguments
         aseLong
         aseShort
@@ -41,9 +43,11 @@ function out = vcbvConsistency(aseLong, aseShort, XL, XS, TEsShort, fitRes, sigL
     iR2P = pL;                                     % R2' is the last long coefficient
 
     out.SE_int  = NaN(sz);  out.SE_quad = NaN(sz);  out.z = NaN(sz);
+    out.SE_k = NaN(sz);  out.kZ = NaN(sz);
     R2P  = fitRes.R2P(:);  k = fitRes.k(:);
     dif  = fitRes.vCBV(:) - fitRes.vCBV_quad(:);
-    vox  = find(isfinite(dif) & isfinite(R2P) & isfinite(k) & k < 0);
+    vox  = find(isfinite(fitRes.vCBV(:)) & isfinite(R2P) & isfinite(k));   % SE_k for all of these
+    useQ = isfinite(dif) & k < 0;                                           % vCBV_quad defined
     if isempty(vox), return; end
 
     % column scaling for conditioning (as in fitMultiRegressor)
@@ -54,7 +58,7 @@ function out = vcbvConsistency(aseLong, aseShort, XL, XS, TEsShort, fitRes, sigL
     YS = reshape(aseShort, nVox, NS);
     wL = getW(sigLog, 'wL', nVox, NL);  wS = getW(sigLog, 'wS', nVox, NS);
     sig = reshape(sigLog.sigma, nVox, []);
-    SE_int = NaN(nVox,1);  SE_q = NaN(nVox,1);  SE_d = NaN(nVox,1);
+    SE_int = NaN(nVox,1);  SE_q = NaN(nVox,1);  SE_d = NaN(nVox,1);  SE_kk = NaN(nVox,1);
 
     ws = warning('off','MATLAB:nearlySingularMatrix');
     cleanup = onCleanup(@() warning(ws));
@@ -83,11 +87,17 @@ function out = vcbvConsistency(aseLong, aseShort, XL, XS, TEsShort, fitRes, sigL
         vQ   = sum(qL.^2.*sL,2) + sum(qS.^2.*sS,2);
         vD   = sum((aL-qL).^2.*sL,2) + sum((aS-qS).^2.*sS,2);
         SE_int(idx) = sqrt(vInt);  SE_q(idx) = sqrt(vQ);  SE_d(idx) = sqrt(vD);
+        % k = P_S(2,:)(yS + R2*TE_S): d k/d yS = P_S(2,:), d k/d yL = (P_S(2,:)*TE_S) * P_L(2,:)
+        SE_kk(idx) = sqrt(sum((c2.*PL2).^2.*sL,2) + sum(PS2.^2.*sS,2));
     end
+    SE_int(~useQ) = NaN;  SE_q(~useQ) = NaN;  SE_d(~useQ) = NaN;           % as before: k < 0 only
     out.SE_int  = reshape(SE_int, sz);
     out.SE_quad = reshape(SE_q,   sz);
     z = dif ./ SE_d;  z(~isfinite(z)) = NaN;
     out.z = reshape(z, sz);
+    kZ = k ./ SE_kk;  kZ(~isfinite(kZ)) = NaN;
+    out.SE_k = reshape(SE_kk, sz);
+    out.kZ   = reshape(kZ, sz);
 end
 
 function [P, s2] = proj(Y, Xs, colScale, sig, echoIdx, fac, w)

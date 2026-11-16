@@ -1241,3 +1241,34 @@ The 3×3 smoothing changes nothing material.
 - **5 regions lose their OEF.** All five fall below `minVoxKept` (5 effective voxels): left
   entorhinal and pars orbitalis cortex, right entorhinal, pars orbitalis and frontal-pole WM.
   These regions were already 95%+ excluded by the z-shim and CSF criteria.
+
+### Q6 — Bit 1: significance test on the short-regime curvature (decided: option b)
+
+**Change:**
+- `vcbvConsistency` now also returns SE(k) and kZ = k/SE(k) for every voxel with a finite k.
+  SE(k) includes the coupling through R2 in the short-regime fit.
+- The earlier outputs (SE_int, SE_quad, z) are unchanged: still k < 0 only.
+- **New map:** `_kZ`.
+- **Bit 1** now flags kZ > `quadSign_kZmin` (default 2). Setting 0 flags any k > 0.
+- **Tests** (21 of 21 pass):
+  - Monte Carlo: analytic SE(k) is 62.6, against an MC SD of 62.7.
+  - With no true curvature, kZ has SD 1.00 and P(kZ > 2) = 2.2% (Gaussian 2.3%).
+
+**Scratch subject** (set C thresholds + dBCorr, bit 1 on vs off):
+
+| | k ≥ 0 (old rule) | kZ > 2 (new) | bit 1 sole cause |
+|---|---|---|---|
+| clean deep WM | 5.0% | 1.2% | 0.8% |
+| WM | 23.3% | 12.6% | 6.8% |
+| cortex | 30.1% | 17.7% | 7.5% |
+| deep GM | 23.6% | 12.4% | 4.2% |
+
+- **In clean WM the new rule fires below the noise rate** (1.2% against 2.3%).
+- **Outside clean WM it fires 5–8× more often than noise would.** These voxels have genuinely
+  upward short-regime curvature, so the model misfits there.
+- **Untested hypothesis:** an echo-centre shift from in-plane field gradients, which a fit with a
+  τ² term only would absorb as positive k.
+- **ROI effect:**
+  - Excluded occupancy rises from 44.6% to 50.0%.
+  - OEF median +0.005 [IQR +0.001, +0.014], vCBV −0.001.
+  - 5 small susceptibility-region regions fall below `minVoxKept`.

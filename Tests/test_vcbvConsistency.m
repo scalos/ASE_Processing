@@ -46,6 +46,38 @@ function testSEMatchesMonteCarlo(tc)
     tc.verifyEqual(zr, 1, 'AbsTol', 0.15);
     tc.verifyLessThan(abs(median(o.z(:),'omitnan')), 0.25);
     tc.verifyLessThan(mean(abs(o.z(:))>3), 0.01);
+    % SE of the curvature k (incl. the R2 coupling) vs Monte Carlo
+    fprintf('k: MC SD %.4g, analytic SE %.4g\n', std(fr.k(:)), median(o.SE_k(:)));
+    tc.verifyEqual(median(o.SE_k(:)), std(fr.k(:)), 'RelTol', 0.05);
+end
+
+function testKZNullFalsePositiveRate(tc)
+% No short-regime curvature (zeta = 0, so k = 0 exactly): k/SE(k) should be ~N(0,1),
+% so the bit-1 test k/SE(k) > 2 fires in ~2.3% of voxels.
+    rng(9);
+    nMC = 20000;
+    dte = repmat((0:44).',2,1);
+    tau = [dte; dte + 32]/1000;  TE = [61.2*ones(90,1); 93.2*ones(90,1)]/1000;
+    echo = [ones(90,1); 2*ones(90,1)];
+    short = tau <= 0.014;  long = tau > 0.020;
+    lnS = log(400) - 12*TE - 6*tau;  lnS(short) = log(400) - 12*TE(short);
+    sigma = [4; 3.5];
+    Y = reshape(exp(lnS).' + sigma(echo).' .* randn(nMC, numel(lnS)), nMC,1,1,[]);
+    yL = Y(:,:,:,long);  yS = Y(:,:,:,short);
+    XL = [ones(nnz(long),1), -TE(long), -tau(long)];  XS = [ones(nnz(short),1), tau(short).^2];
+    TES = TE(short);
+    BL = fitMultiRegressor(yL, XL);
+    BS = fitMultiRegressor(yS .* exp(BL(:,:,:,2) .* reshape(TES,1,1,1,[])), XS);
+    fr.vCBV = BL(:,:,:,1) - BS(:,:,:,1);  fr.R2P = BL(:,:,:,3);  fr.k = BS(:,:,:,2);
+    fr.vCBV_quad = -0.3*fr.R2P.^2./fr.k;  fr.vCBV_quad(~(fr.k<0)) = NaN;
+    sl = struct('sigma', repmat(reshape(sigma,1,1,1,2), nMC,1,1,1), ...
+                'echoL', echo(long), 'facL', ones(nnz(long),1), 'echoS', echo(short), 'facS', ones(nnz(short),1));
+    o = vcbvConsistency(yL, yS, XL, XS, TES, fr, sl);
+    fp = mean(o.kZ(:) > 2);
+    fprintf('k = 0: mean kZ %.3f, SD %.3f, P(kZ > 2) = %.4f (Gaussian 0.0228); finite kZ %.1f%%\n', ...
+        mean(o.kZ(:),'omitnan'), std(o.kZ(:),'omitnan'), fp, 100*mean(isfinite(o.kZ(:))));
+    tc.verifyEqual(std(o.kZ(:),'omitnan'), 1, 'AbsTol', 0.05);
+    tc.verifyEqual(fp, 0.0228, 'AbsTol', 0.006);
 end
 
 function testWeightedSEMatchesMonteCarlo(tc)

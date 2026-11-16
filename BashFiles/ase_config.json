@@ -76,6 +76,7 @@
       "minVoxKept": 5,
       "useBounds": true,
       "useQuadSign": true,
+      "quadSign_kZmin": 2,
       "useVcbvZ": true,
       "vcbvZ_max": 3,
       "useSNR": true,
