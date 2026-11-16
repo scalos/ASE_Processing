@@ -462,8 +462,10 @@ brain the CSF fraction is 1.
 - The source mask is float, so the linear resampling gives true fractions. A byte mask (like
   `anat_fs_brain_al_mask`) would be rounded back to 0/1 by `3dAllineate` unless it's converted
   first. That matters if you add byte masks to `qualityMaskNames`.
-- Sulcal CSF counts as tissue in this mask, so bit 4 catches ventricles and the brain's outer
-  boundary, not sulci.
+- ~~Sulcal CSF counts as tissue in this mask, so bit 4 catches ventricles and the brain's outer
+  boundary, not sulci.~~ **Corrected 2026-11-16:** this was wrong. The mask is the FreeSurfer
+  aseg labels minus the ventricles, so sulcal CSF (aseg = 0) is 0 in it and counts as CSF. See Q4
+  under Decisions.
 
 **Deleted from scratch:** the 2 fit folders, logs and the prep log. Kept: the new
 `anat_fs_xvent_mask_al_ase.nii.gz` in the scratch session folder, which is an input for later
@@ -864,7 +866,7 @@ change.
 - **Q4 — `anat_fs_xvent_mask_al` semantics.** It is brain-minus-ventricles, so I used
   CSF = 1 − mask. Should we use a real CSF partial-volume map instead (for example aseg CSF
   labels plus sulcal CSF)? Bit 4 currently catches ventricles and the outer brain edge, but not
-  sulci.
+  sulci. *(Premise corrected 2026-11-16: xvent does include sulcal CSF; see Decisions, Q4.)*
 - **Q5 — Vein threshold.**
   - A fixed 0.15 doesn't fit this subject, whose vCBV_int is high overall.
   - Should it be relative (a percentile of clean WM, or a multiple of the regional median)?
@@ -1110,3 +1112,44 @@ in `ASE_fitting.m` marks it.
     differences: true 0.20 vs 0.40 reads as about 0.235 vs 0.42 with the current default.
 - **No setting removes the bias.** About 10% at low OEF and 4–5% at high OEF remains with every
   regime split. The real fix is fitting the full static-dephasing model.
+
+### Q4 — CSF mask (decided: keep xvent; SynthSeg posteriors available as an opt-in)
+
+**Correction:** `anat_fs_xvent_mask_al` = aseg-labelled brain minus the ventricles. Checked at
+1 mm on the scratch subject:
+- It is 1 in 100% of aseg cortex voxels.
+- It is 0 in all 140,722 voxels that are inside the brain mask but unlabelled by aseg, which are
+  mostly sulcal CSF.
+- So CSF = 1 − mask already includes sulcal CSF as FreeSurfer defines it. The overnight claim
+  that it doesn't was wrong.
+
+**Alternative tested:** SynthSeg posteriors, `session_afni_nortc/anat_fs_al_posteriors.nii.gz`.
+- **Format:** 33 maps (background + 32 labels). Labels were matched against
+  `anat_fs_al_vol.csv`, e.g. map 17 = "csf" (225,770 mm³).
+- **Tissue fraction** = 1 − (background + CSF + all ventricles).
+- **In the same aseg-unlabelled voxels:** the posterior tissue fraction averages 0.50.
+  SynthSeg's cortex extends into FreeSurfer's sulcal CSF.
+
+| | xvent | SynthSeg posterior |
+|---|---|---|
+| cortex with CSF fraction > 0.2 (ASE grid) | 14.9% | 9.0% |
+| WM / deep GM / ventricles | 0.5% / 4.4% / 97.7% | 0.5% / 5.1% / 94.7% |
+| median CSF exclusion per cortical ROI (set C + dBCorr) | 26% | 17% |
+| ROI OEF, posterior − xvent | — | +0.002 cortex, +0.001 WM parcels |
+| regions with OEF | 145 | 145 |
+
+**Decision:** keep xvent as the default. It is consistent with the FreeSurfer segmentation that
+defines the ROIs and needs no extra input. ROI values barely depend on the choice.
+
+**Opt-in SynthSeg stage** (`asePreProcess.sh` stage 7b, off by default):
+- **Enable it with:**
+  - `--set tissuePosteriorName=anat_fs_al_posteriors.nii.gz`
+  - `--set qualityMaskNames=anat_fs_tissueFrac_al.nii.gz`
+  - `qualityMaskNames` set the same way for `aseFit.sh`.
+- **Keys:** `tissueFracName`, `posteriorNonTissueVols` (0-based maps, default
+  `0,3,4,11,12,16,21,22`) and `posteriorNVols` (33; checked).
+- **Behaviour:**
+  - It runs from the subject folder, because AFNI rejects paths with spaces.
+  - It is rebuilt only when missing or on `--regenTransfer`.
+- **Tested on scratch:** the default run is a no-op, and the opt-in run builds and resamples the
+  fraction.
