@@ -5,7 +5,9 @@ function [dTEs, zShimming, TEs, info] = readASEHeader(hdr_File)
 %   zShimming : ndTE x nEchos       z-moment per frame (Tms/m), same frame order as dTEs
 %   TEs       : nEchos x 1          echo times (ms), ordered by echo number
 %   info      : struct (optional 4th output) with B0, ImagingFrequency, MaxDTE_ms,
-%               StepDTE_ms, nSweep, nExtraPerRep, repRows, sortIdx, series, files, ...
+%               StepDTE_ms, nSweep, nReps, nZshimming, repInds, zShimInds,
+%               zMoments (nZshim x nEchos, T*s/m), SliceThickness_mm (nEchos x 1,
+%               NaN if absent from the header), series, file
 %
 % The header lists frames for ALL reps in one list per echo. Each NIfTI holds one rep.
 % Split convention:
@@ -25,7 +27,18 @@ function [dTEs, zShimming, TEs, info] = readASEHeader(hdr_File)
     end
 
     e = h.echos;
-    if iscell(e), e = [e{:}]; end
+    if iscell(e)
+        % echo entries with different optional fields decode as a cell: pad missing fields
+        allF = {};
+        for k = 1:numel(e), allF = union(allF, fieldnames(e{k}), 'stable'); end
+        for k = 1:numel(e)
+            for f = setdiff(allF, fieldnames(e{k}))'
+                e{k}.(f{1}) = [];
+            end
+            e{k} = orderfields(e{k}, allF);
+        end
+        e = [e{:}];
+    end
     e = e(:);
     nEchos = numel(e);
     if isfield(h,'nEchos')
@@ -84,6 +97,19 @@ function [dTEs, zShimming, TEs, info] = readASEHeader(hdr_File)
         info.nSweep           = nSweep;
         info.nZshimming       = nZshimming;
         info.repInds          = repInds;
+        % trailing z-shim frames (raw-file frame indices, same for every echo)
+        info.zShimInds        = nSweep*nReps + (1:nZshimming);
+        % z-shim moments, nZshim x nEchos, converted from Tms/m (header units) to T*s/m
+        info.zMoments         = zShimming(info.zShimInds,:) * 1e-3;
+        % slice thickness per echo (mm); NaN where the header does not provide it
+        % (only required when z-shim correction is enabled)
+        info.SliceThickness_mm = NaN(nEchos,1);
+        if isfield(e,'SliceThickness_mm')
+            for i = 1:nEchos
+                st_i = e(i).SliceThickness_mm;
+                if isnumeric(st_i) && isscalar(st_i), info.SliceThickness_mm(i) = st_i; end
+            end
+        end
         info.series = cell(nEchos,1);
         info.file  = cell(nEchos,1);
         for i = 1:nEchos

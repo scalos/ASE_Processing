@@ -20,6 +20,7 @@ hdrFileName=ase_hdr.json
 segNames="anat_fs_aparc_aseg_al.nii.gz,anat_fs_wmparc_al.nii.gz,anat_fs_bstem_al.nii.gz"
 segSuffix="_ase"
 segLUTs="/autofs/space/guasha_004/users/crbc/yen/ase/GM_WM_long.txt"
+qualityMaskNames="anat_fs_xvent_mask_al.nii.gz"   # quality masks (before segSuffix); used only if present
 fitsSubdir=fits
 outPref=ase_fit_results
 matlabBin=matlab
@@ -46,7 +47,8 @@ Config:
                               "pipeline" keys are read here; "fit" keys are read by MATLAB.
   --fit key=value             Override a "fit" option (repeatable). Value is JSON; bare words are
                               quoted automatically (e.g. --fit physBdClipVal=NaN --fit Hct=0.4
-                              --fit physBd_OEF=[0,1])
+                              --fit physBd_OEF=[0,1]). Nested blocks are merged key by key, e.g.
+                              --fit 'quality={"enabled":true,"snr_min":5}' keeps the other quality keys.
 
 Pipeline options (override the config; defaults in brackets):
   --allSubjDir <path>         [$allSubjDir]
@@ -59,6 +61,8 @@ Pipeline options (override the config; defaults in brackets):
   --segNames <a,b,...>        Segmentation names before the suffix is added; empty = no ROI stats [$segNames]
   --segSuffix <str>           [$segSuffix]
   --segLUTs <a,b,...>         LUT file path(s) [$segLUTs]
+  --qualityMaskNames <a,...>  Quality masks on the ASE grid (before the suffix); passed to MATLAB as
+                              qualityMaskFiles when present (used by fit.quality) [$qualityMaskNames]
   --fitsSubdir <name>         [$fitsSubdir]
   --outPref <str>             [$outPref]
   --matlabBin <path>          [$matlabBin]
@@ -145,7 +149,7 @@ if [[ -n $configFile ]]; then
 		echo "Warning: no \"pipeline\" section found in $configFile (script defaults used)"
 	fi
 	for key in allSubjDir dataList nEchos aseSubjDir aseProcName hdrFileName segNames segSuffix \
-	           segLUTs fitsSubdir outPref matlabBin matdir B0; do
+	           segLUTs qualityMaskNames fitsSubdir outPref matlabBin matdir B0; do
 		if val=$(cfg_get "$pipeSec" "$key"); then printf -v "$key" '%s' "$val"; fi
 	done
 	echo "Using config: $configFile"
@@ -168,6 +172,7 @@ while [[ $# -gt 0 ]]; do
 		--segNames)       need_arg "$@"; segNames=$2;       shift 2 ;;
 		--segSuffix)      need_arg "$@"; segSuffix=$2;      shift 2 ;;
 		--segLUTs)        need_arg "$@"; segLUTs=$2;        shift 2 ;;
+		--qualityMaskNames) need_arg "$@"; qualityMaskNames=$2; shift 2 ;;
 		--fitsSubdir)     need_arg "$@"; fitsSubdir=$2;     shift 2 ;;
 		--outPref)        need_arg "$@"; outPref=$2;        shift 2 ;;
 		--matlabBin)      need_arg "$@"; matlabBin=$2;      shift 2 ;;
@@ -198,8 +203,9 @@ fi
 overridesJson=""
 [[ -n $fitOverrides ]] && overridesJson="{${fitOverrides}}"
 
-segList=(); lutList=()
+segList=(); lutList=(); qmList=()
 [[ -n $segNames ]] && IFS=',' read -ra segList <<< "$segNames"
+[[ -n $qualityMaskNames ]] && IFS=',' read -ra qmList <<< "$qualityMaskNames"
 [[ -n $segLUTs ]]  && IFS=',' read -ra lutList <<< "$segLUTs"
 nSeg=${#segList[@]}
 if ((nSeg > 0 && ${#lutList[@]} == 0)); then
@@ -366,6 +372,22 @@ for x in "${subjlist[@]}"; do
 		segArgs=",'segFiles',$(make_cell "${segPthList[@]}"),'segLUTs',$(make_cell "${lutList[@]}")"
 	fi
 
+	# ---- quality masks (already on the ASE grid); optional: missing ones are only warned about ----
+	qmArgs=""
+	if ((${#qmList[@]} > 0)); then
+		qmPthList=()
+		for qmName in "${qmList[@]}"; do
+			base=${qmName%.gz}; base=${base%.nii}
+			qmOut="${base}${segSuffix}.nii.gz"
+			if [[ -e "$subjBase/$qmOut" ]]; then
+				qmPthList+=("$subjBase/$qmOut")
+			else
+				warnMsg+="  - quality mask not found (quality criteria using it are skipped): $subjBase/$qmOut${nl}"
+			fi
+		done
+		((${#qmPthList[@]} > 0)) && qmArgs=",'qualityMaskFiles',$(make_cell "${qmPthList[@]}")"
+	fi
+
 	if ((okay == 0)); then
 		record_fail "Skipping $x:${nl}${missingReasons}"
 		continue
@@ -387,7 +409,7 @@ for x in "${subjlist[@]}"; do
 
 	{
 		printf '%s\n' "try"
-		printf '%s\n' "    runWithProgress(@() runASEFromConfig(${subjB0},'$(mq "$hdrPth")',${asePths},'$(mq "$runOutDir")'${cfgArg}${ovArg}${segArgs},'outPref','$(mq "$outPrefFull")'), '$(mq "$x")', ${subj_i}, ${nsubj});"
+		printf '%s\n' "    runWithProgress(@() runASEFromConfig(${subjB0},'$(mq "$hdrPth")',${asePths},'$(mq "$runOutDir")'${cfgArg}${ovArg}${segArgs}${qmArgs},'outPref','$(mq "$outPrefFull")'), '$(mq "$x")', ${subj_i}, ${nsubj});"
 		printf '%s\n' "    fID = fopen('$(mq "$failFile")', 'at');"
 		printf '%s\n' "    if fID ~= -1; fprintf(fID, '+%s\n', '$(mq "$x")'); fclose(fID); end"
 		printf '%s\n' "catch ME"

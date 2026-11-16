@@ -9,9 +9,12 @@
 #   5. transfer anatomical/segmentation volumes from transferSrcDir (+orig -> nifti)   [if missing]
 #   6. register ase_base to the anatomical (3dAllineate) and make the inverse matrix   [if missing]
 #   7. transform segmentations into ASE space (nearest neighbor)
+#   7b. optional: build a tissue fraction (tissueFracName) from SynthSeg posteriors (tissuePosteriorName):
+#       1 - sum(background, CSF, ventricle posteriors)                                 [if missing]
+#   8. resample quality masks (qualityMaskNames) onto the ASE grid (linear -> fractions 0..1)
 # Existing outputs are skipped unless regenerated. Regenerating an upstream stage forces its
 # downstream stages (and overwrites). Settings: script defaults < config "pipeline" section < flags.
-# Stages 5-7 are skipped when segNames is empty.
+# Stages 5-8 are skipped when segNames is empty.
 
 scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -47,8 +50,17 @@ transferSrcDir=session_afni_nortc
 transferNames="anat_fs_brain_al.nii.gz,anat_fs_brain_al_mask.nii.gz,anat_fs_xvent_mask_al.nii.gz,anat_fs_bstem_al.nii.gz"
 segNames="anat_fs_aparc_aseg_al.nii.gz,anat_fs_wmparc_al.nii.gz"
 segSuffix="_ase"
+qualityMaskNames="anat_fs_xvent_mask_al.nii.gz"   # tissue fractions resampled to the ASE grid; empty = none
+# Optional SynthSeg tissue fraction (off by default). To use it instead of xvent, set
+#   tissuePosteriorName=anat_fs_al_posteriors.nii.gz  and  qualityMaskNames=anat_fs_tissueFrac_al.nii.gz
+# (and qualityMaskNames for aseFit.sh). Note SynthSeg's cortex extends into FreeSurfer's sulcal CSF.
+tissuePosteriorName=""                             # SynthSeg posteriors (NIfTI) in transferSrcDir; empty = off
+tissueFracName="anat_fs_tissueFrac_al.nii.gz"      # built from the posteriors (anatomical grid)
+posteriorNonTissueVols="0,3,4,11,12,16,21,22"      # 0-based sub-bricks: background, L lat/inf-lat vent,
+                                                   #   3rd, 4th vent, CSF (label 24), R lat/inf-lat vent
+posteriorNVols=33                                  # expected sub-bricks (SynthSeg standard label set)
 
-pipelineKeys="allSubjDir dataList echo1Col echoSpacing nEchos aseSubjDir rawDataDir dcmIndexFile scannerCode commentScript dcm2niixMinFiles dimonOpts rawNii pattern_dicomHdr pattern_dteHdr aseProcName motionParamName hdrFileName volregOpts baseName baseFrame baseAlName regBaseName allineateOpts tformName tformApplyName transferSrcDir transferNames segNames segSuffix"
+pipelineKeys="allSubjDir dataList echo1Col echoSpacing nEchos aseSubjDir rawDataDir dcmIndexFile scannerCode commentScript dcm2niixMinFiles dimonOpts rawNii pattern_dicomHdr pattern_dteHdr aseProcName motionParamName hdrFileName volregOpts baseName baseFrame baseAlName regBaseName allineateOpts tformName tformApplyName transferSrcDir transferNames segNames segSuffix qualityMaskNames tissuePosteriorName tissueFracName posteriorNonTissueVols posteriorNVols"
 
 # regeneration / logging / retry
 regenNifti=0; regenComments=0; regenHdr=0; regenMotion=0
@@ -83,7 +95,7 @@ Regeneration (overwrites; downstream stages are forced too):
   --regenMotion          motion correction only
   --regenTransfer        re-copy anatomical/segmentation files (forces segmentation transforms)
   --regenRegister        re-register ase_base to anatomical (forces segmentation transforms)
-  --regenTransform       segmentation transforms only
+  --regenTransform       segmentation transforms and quality-mask resampling only
 
 Logging / retry:
   --omitFailLog | --retryMostRecent | --retryFromFile <file> | --help
@@ -222,13 +234,16 @@ elif command -v "$commentScript" > /dev/null 2>&1; then
 fi
 
 # segmentation / transfer lists
-segArr=(); transferArr=()
+segArr=(); transferArr=(); qmArr=()
 [[ -n $segNames ]] && IFS=',' read -ra segArr <<< "$segNames"
 [[ -n $transferNames ]] && IFS=',' read -ra transferArr <<< "$transferNames"
+[[ -n $qualityMaskNames ]] && IFS=',' read -ra qmArr <<< "$qualityMaskNames"
 nSeg=${#segArr[@]}
+nQm=${#qmArr[@]}
 xferList=()
 if ((nSeg > 0)); then
-	for name in "${transferArr[@]}" "${segArr[@]}"; do
+	for name in "${transferArr[@]}" "${segArr[@]}" "${qmArr[@]}"; do
+		[[ -n $tissuePosteriorName && $name == "$tissueFracName" ]] && continue   # built, not transferred
 		dup=0
 		for e in "${xferList[@]}"; do [[ $e == "$name" ]] && dup=1; done
 		((dup)) || xferList+=("$name")
@@ -261,9 +276,9 @@ done
 check_subject() {
 	local ei series nii side dte proc mc nraw j k name base idx
 	missingReasons=""; ok=1
-	echoNums=(); doNiiE=(); doSideE=(); doCommE=(); doMotionE=(); xferDo=(); segDo=()
+	echoNums=(); doNiiE=(); doSideE=(); doCommE=(); doMotionE=(); xferDo=(); segDo=(); qmDo=()
 	anyNii=0; anySide=0; anyComm=0; anyMotion=0
-	doRegister=0; doInverse=0; doHdr=0
+	doRegister=0; doInverse=0; doHdr=0; tfDo=0
 
 	if [[ ! -d $subjDir ]]; then
 		missingReasons+="  - subject directory not found: $subjDir${nl}"
@@ -351,6 +366,30 @@ check_subject() {
 			segDo[k]=0
 			if ((regenTransform == 1 || doRegister == 1)) || [[ ! -e $subjBase/${base}${segSuffix}.nii.gz ]] || ((xferDo[idx] == 1)); then
 				segDo[k]=1
+			fi
+		done
+
+		# tissue fraction from the SynthSeg posteriors (rebuilt with the transfers)
+		if [[ -n $tissuePosteriorName ]]; then
+			if ((regenTransfer == 1)) || [[ ! -e $subjBase/$tissueFracName ]]; then
+				tfDo=1
+				if [[ ! -e $transferSrc/$tissuePosteriorName ]]; then
+					ok=0; missingReasons+="  - tissue posteriors not found: $transferSrc/$tissuePosteriorName${nl}"
+				fi
+			fi
+		fi
+
+		# quality masks: same matrix, but onto the ASE grid (master = baseName)
+		for ((k = 0; k < nQm; k++)); do
+			name=${qmArr[k]}; base=$(strip_nii "$name")
+			if [[ -n $tissuePosteriorName && $name == "$tissueFracName" ]]; then
+				srcNew=$tfDo
+			else
+				idx=$(xfer_index "$name"); srcNew=${xferDo[idx]}
+			fi
+			qmDo[k]=0
+			if ((regenTransform == 1 || doRegister == 1)) || [[ ! -e $subjBase/${base}${segSuffix}.nii.gz ]] || ((srcNew == 1)); then
+				qmDo[k]=1
 			fi
 		done
 	fi
@@ -474,7 +513,7 @@ build_header() {
 	local out=$1
 	local ei series echoLabel dte side nii nLines ntNii
 	local dteRaw zmRaw maxRaw stepRaw v nu
-	local b0e fe te te_ms dteMs maxMs stepMs zmCsv proc
+	local b0e fe te te_ms dteMs maxMs stepMs zmCsv proc sth sthLine
 	local B0="" freq="" blocks="" block
 	local firstDte="" firstZm=""
 	hdrErr=""
@@ -501,6 +540,14 @@ build_header() {
 			[[ $fe == "$freq" ]] || warnMsg+="  - warning: ImagingFrequency for echo $echoLabel ($fe) differs from echo 1 ($freq)${nl}"
 		fi
 		te_ms=$(awk -v t="$te" 'BEGIN{printf "%.10g", t*1000}')
+		# slice thickness (mm; needed for z-shim correction). Optional: omitted from the header if absent.
+		sth=$(json_num "$side" SliceThickness)
+		sthLine=""
+		if is_num "$sth"; then
+			sthLine=$(printf '\n      "SliceThickness_mm": %s,' "$sth")
+		else
+			warnMsg+="  - warning: SliceThickness not found in $side (z-shim correction will be unavailable)${nl}"
+		fi
 
 		nLines=$(tr -d '\r' < "$dte" | grep -c '_DTE=')
 		if ((nLines == 0)); then hdrErr+="  - no '_DTE=' entries found in $dte${nl}"; return 1; fi
@@ -537,8 +584,8 @@ build_header() {
 			[[ $zmCsv == "$firstZm" ]]  || warnMsg+="  - warning: ZMoment values for echo $echoLabel differ from echo 1${nl}"
 		fi
 
-		block=$(printf '    {\n      "echo": %d,\n      "series": "%s",\n      "EchoTime_ms": %s,\n      "nFrames": %d,\n      "MaxDTE_ms": %s,\n      "StepDTE_ms": %s,\n      "dTE_ms": [%s],\n      "ZMoment": [%s],\n      "file": "%s"\n    }' \
-			"$echoLabel" "$series" "$te_ms" "$nLines" "$maxMs" "$stepMs" "$dteMs" "$zmCsv" "$proc")
+		block=$(printf '    {\n      "echo": %d,\n      "series": "%s",\n      "EchoTime_ms": %s,%s\n      "nFrames": %d,\n      "MaxDTE_ms": %s,\n      "StepDTE_ms": %s,\n      "dTE_ms": [%s],\n      "ZMoment": [%s],\n      "file": "%s"\n    }' \
+			"$echoLabel" "$series" "$te_ms" "$sthLine" "$nLines" "$maxMs" "$stepMs" "$dteMs" "$zmCsv" "$proc")
 		blocks+="${blocks:+,$nl}$block"
 	done
 
@@ -670,6 +717,56 @@ stage_segments() {
 	return 0
 }
 
+# tissue fraction = 1 - (background + CSF + ventricle posteriors), on the anatomical grid
+stage_tissueFrac() {
+	local src nv letters="abcdefghijklmnopqrstuvwxyz" args=() expr="" i v vols
+	((nSeg > 0 && tfDo == 1)) || return 0
+	src="$transferSrcDir/$tissuePosteriorName"          # relative to subjDir (AFNI dislikes spaces in paths)
+	nv=$(cd "$subjDir" && 3dinfo -nv "$src" 2>/dev/null)
+	if [[ $nv != "$posteriorNVols" ]]; then
+		procErr+="  - $tissuePosteriorName has ${nv:-?} sub-bricks, expected $posteriorNVols (SynthSeg label set)${nl}"; return 1
+	fi
+	IFS=',' read -ra vols <<< "$posteriorNonTissueVols"
+	for ((i = 0; i < ${#vols[@]}; i++)); do
+		v=${vols[i]}
+		if [[ ! $v =~ ^[0-9]+$ ]] || ((v >= nv)) || ((i >= 26)); then
+			procErr+="  - invalid posteriorNonTissueVols entry '$v'${nl}"; return 1
+		fi
+		args+=("-${letters:i:1}" "${src}[$v]")
+		expr+="${expr:++}${letters:i:1}"
+	done
+	echo "[$subjID] Building $tissueFracName from $tissuePosteriorName (1 - sub-bricks $posteriorNonTissueVols)"
+	if ! ( cd "$subjDir" && 3dcalc "${args[@]}" -expr "max(0,min(1,1-($expr)))" -datum float \
+			-prefix "$aseSubjDir/$tissueFracName" -overwrite ); then
+		rm -f "$subjBase/$tissueFracName"
+		procErr+="  - 3dcalc failed building $tissueFracName${nl}"; return 1
+	fi
+	if [[ ! -e $subjBase/$tissueFracName ]]; then
+		procErr+="  - expected output not found after 3dcalc: $subjBase/$tissueFracName${nl}"; return 1
+	fi
+	return 0
+}
+
+# quality masks -> ASE grid with linear interpolation, so the result is a fraction (0-1)
+stage_qualityMasks() {
+	local k qm base out
+	((nSeg > 0 && nQm > 0)) || return 0
+	for ((k = 0; k < nQm; k++)); do
+		((qmDo[k] == 1)) || continue
+		ensure_base || return 1
+		qm=${qmArr[k]}; base=$(strip_nii "$qm"); out=${base}${segSuffix}.nii.gz
+		echo "[$subjID] Resampling $qm -> $out on the ASE grid (linear; matrix: $tformApplyName)"
+		if ! 3dAllineate -1Dmatrix_apply "$tformApplyName" -source "$qm" -master "$baseName" -prefix "$out" -final linear -overwrite; then
+			rm -f "$out"
+			procErr+="  - 3dAllineate (quality mask) failed for $qm${nl}"; return 1
+		fi
+		if [[ ! -e $out ]]; then
+			procErr+="  - expected output not found after 3dAllineate: $out${nl}"; return 1
+		fi
+	done
+	return 0
+}
+
 process_subject() {
 	procErr=""
 	mkdir -p "$subjBase" && cd "$subjBase" || { procErr+="  - cannot create/enter $subjBase${nl}"; return 1; }
@@ -680,6 +777,8 @@ process_subject() {
 	stage_transfer || return 1
 	stage_register || return 1
 	stage_segments || return 1
+	stage_tissueFrac || return 1
+	stage_qualityMasks || return 1
 	return 0
 }
 

@@ -7,9 +7,12 @@ function runASEFromConfig(B0, hdr_File, sorted_ASE_Files, runOutDir, opts)
 %   opts.cfgFile  : path to config json (optional; empty = MATLAB defaults)
 %   opts.overrides: JSON object string of fit overrides, e.g. '{"Hct":0.4}'
 %   opts.segFiles, opts.segLUTs : cell arrays of paths (may be empty)
+%   opts.qualityMaskFiles : cell array of quality masks on the ASE grid (may be empty)
 %   opts.outPref  : full output prefix (path included)
 %
 % Config values: "Inf", "-Inf", "NaN" (strings) become numbers; null becomes [].
+% Overrides of nested blocks (e.g. --fit 'quality={"enabled":true}') are merged into the
+% config's block key by key rather than replacing it.
     arguments
         B0 (1,1) double
         hdr_File
@@ -19,10 +22,11 @@ function runASEFromConfig(B0, hdr_File, sorted_ASE_Files, runOutDir, opts)
         opts.overrides = ''
         opts.segFiles = {}
         opts.segLUTs = {}
+        opts.qualityMaskFiles = {}
         opts.outPref = ''
     end
     assert(~isempty(opts.outPref), 'outPref must be provided.');
-    reserved = {'segFiles','segLUTs','outPref'};
+    reserved = {'segFiles','segLUTs','qualityMaskFiles','outPref'};
 
     % ---- read config ----
     fit = struct();
@@ -42,11 +46,22 @@ function runASEFromConfig(B0, hdr_File, sorted_ASE_Files, runOutDir, opts)
             error('Could not parse --fit overrides as JSON (%s): %s', opts.overrides, ME.message);
         end
         for f = fieldnames(ov)'
-            fit.(f{1}) = ov.(f{1});
+            if isfield(fit, f{1}) && isstruct(fit.(f{1})) && isstruct(ov.(f{1}))
+                % nested blocks (e.g. "quality") are merged key by key, so an override
+                % changes only the keys it names
+                for g = fieldnames(ov.(f{1}))'
+                    fit.(f{1}).(g{1}) = ov.(f{1}).(g{1});
+                end
+            else
+                fit.(f{1}) = ov.(f{1});
+            end
         end
     end
 
     fit = convertSpecial(fit);
+    if isfield(fit, 'quality')
+        fit.quality = qualityDefaults(fit.quality);   % validate keys; record the full block
+    end
 
     bad = intersect(fieldnames(fit), reserved);
     if ~isempty(bad)
@@ -54,7 +69,8 @@ function runASEFromConfig(B0, hdr_File, sorted_ASE_Files, runOutDir, opts)
     end
 
     % ---- build name-value list ----
-    nv = {'segFiles', opts.segFiles, 'segLUTs', opts.segLUTs, 'outPref', opts.outPref};
+    nv = {'segFiles', opts.segFiles, 'segLUTs', opts.segLUTs, 'qualityMaskFiles', opts.qualityMaskFiles, ...
+          'outPref', opts.outPref};
     for f = fieldnames(fit)'
         nv(end+1:end+2) = {f{1}, fit.(f{1})}; %#ok<AGROW>
     end
@@ -82,6 +98,7 @@ function writeResolved(runOutDir, B0, hdr_File, aseFiles, opts, fit)
                'aseFiles', {num2cell(aseFiles,2)}, ...
                'segFiles', {opts.segFiles}, ...
                'segLUTs', {opts.segLUTs}, ...
+               'qualityMaskFiles', {opts.qualityMaskFiles}, ...
                'outPref', char(opts.outPref), ...
                'fit', encodeSpecial(fit));
     fid = fopen(fullfile(runOutDir,'config_resolved.json'), 'w');

@@ -16,9 +16,10 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
 
         % Fitting options:
         opts.tauRange = []; %ms
-        opts.tCrit_buffer = 3; %ms
+        opts.tCrit_buffer = [3 12]; %ms; [below above] t_crit (scalar = symmetric). Above > below because
+                                    %   the long regime is reached late when true t_c > assumed (StO2_max); see docs Q3
         opts.averageReps = false %whether to average repetitions before fitting 
-        opts.dBCorr = false %Whether to apply db correction. CORRECTION NOT CURRENTLY SUPPORTED!
+        opts.dBCorr = false %Through-slice (z-shim based) dB correction; settings in opts.quality.zshim_*
         opts.tauUsePts = []; %use to restrict tau points used in all fitting operations.  ndTE x nEchos
         opts.physBd_R2 = [0,inf];
         opts.physBd_R2P = [0,inf];
@@ -27,17 +28,23 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         opts.physBdClipVal = [] %if empty: clip to bound, if not: set to value;
         opts.normErr = true;
 
+        % Voxel-quality options (see qualityDefaults.m; every feature off by default):
+        opts.quality = struct()
+
         % ROI computation options:
         opts.segFiles = {}  %path to segentation file (or files). should match segLUT
         opts.segLUTs = {}    %path to segmentation LUT. Should match all segFiles
         opts.minOverlapFrac = 0.25 %fraction ase voxel must overlap with region to be added to that ROI
         opts.warnSegIssues = true;
+        opts.qualityMaskFiles = {} %tissue-fraction masks on the ASE grid (e.g. brain minus
+                                   %ventricles); CSF fraction = 1 - fraction (see quality.useCSF)
         
         % Fitting constants:
         opts.Hct = 0.42
         opts.Hct_correction = 0.85;
         opts.dChi_0 = 0.18*1e-6;   % sus. diff. between oxy and deoxy blood
-        opts.StO2_max = 0.60        % max expected StO2
+        opts.StO2_max = 0.60        % max expected StO2 (sets t_crit only). REVISIT: 0.6 is a typical, not a
+                                    %   maximal, venous Y; see docs/quality-mask-report.md (Q3, StO2_max)
 
         % Write options:
         opts.outPref = './ase_fitting_results'
@@ -49,6 +56,11 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         opts.verbose = false;
     end
     v = opts.verbose;
+    q = qualityDefaults(opts.quality);
+    opts.quality = q;          % resolved block is recorded in the manifest
+    % which quality diagnostics are needed
+    needExt   = q.fitExtensions || (q.enabled && (q.useQuadSign || q.useVcbvZ || q.useR2PEcho));
+    needNoise = q.repNoise || needExt || q.noiseWeighting || (q.enabled && q.useSNR);
 
     %% Load files and verify inputs
     if v; fprintf('Verifying Files...\n');end
@@ -90,12 +102,23 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
     assert(isequal(size(tauUsePts),[ndTEs,nEchos]), ...
         'tauUsePts must be ndTEs x nEchos.');
 
-    %NOT CURRENTLY SUPPORTED!
-    if opts.dBCorr
-        error('dB correction is unsupported!');
-    else
-        % no dB correction: only frames with zero z-moment can be used
-        tauUsePts(zShim~=0) = 0;
+    % frames with a nonzero z-moment never enter the regime fits (with or without dB
+    % correction); they are only used to estimate the through-slice gradient Gz.
+    tauUsePts(zShim~=0) = 0;
+    needZshim = opts.dBCorr || q.zshimEstimate || ...
+                (q.enabled && (q.useZshimEdge || q.useZshimEcho || q.useZshimFrac));
+    if needZshim && any(isnan(info.SliceThickness_mm))
+        if opts.dBCorr
+            error(['dBCorr requires SliceThickness_mm in the header (%s). ' ...
+                   'Regenerate it with asePreProcess.sh --regenHdr.'], hdr_file);
+        end
+        warning('SliceThickness_mm missing from %s: z-shim gradient estimate skipped.', hdr_file);
+        needZshim = false;
+    end
+    if needZshim && info.nZshimming == 0
+        if opts.dBCorr, error('dBCorr requested but the header lists no z-shim frames.'); end
+        warning('No z-shim frames in %s: z-shim gradient estimate skipped.', hdr_file);
+        needZshim = false;
     end
 
     %% Handle averaging and sort ase data into single volume
@@ -127,6 +150,42 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
     end
     nFrames = numel(frameSrc);
     templateHdr = niftiinfo(ase_files{1});
+
+    %% CSF fraction from the quality masks (only when quality features are in use)
+    qual = struct();
+    anyQuality = q.enabled || q.repNoise || q.zshimEstimate || q.fitExtensions;
+    if ~iscell(opts.qualityMaskFiles); opts.qualityMaskFiles = {opts.qualityMaskFiles}; end
+    opts.qualityMaskFiles = opts.qualityMaskFiles(~cellfun(@isempty, opts.qualityMaskFiles));
+    if anyQuality && ~isempty(opts.qualityMaskFiles)
+        csf = zeros(templateHdr.ImageSize(1:3));
+        for i = 1:numel(opts.qualityMaskFiles)
+            fq = opts.qualityMaskFiles{i};
+            isequalNiftiGeometry({templateHdr, niftiinfo(fq)}, "onMismatch","error");
+            frac = min(max(double(niftiread(fq)),0),1);    % linear resampling -> tissue fraction
+            csf = max(csf, 1 - frac);                       % several masks: worst case
+        end
+        qual.csfFrac = csf;
+        if v; fprintf('Loaded %d quality mask(s); CSF fraction > %.2f in %.1f%% of voxels\n', ...
+                numel(opts.qualityMaskFiles), q.csf_max, 100*mean(csf(:) > q.csf_max)); end
+    end
+
+    %% Repetition noise (quality diagnostics), always from the unaveraged data
+    if needNoise
+        if v; fprintf('Estimating repetition noise (sigma, SNR) per echo...\n'); end
+        baseInds = find(taus_raw(repInds(1,:)) == 0);
+        qual.sigma = NaN([templateHdr.ImageSize(1:3), nEchos]);
+        qual.S0    = NaN([templateHdr.ImageSize(1:3), nEchos]);
+        for e = 1:nEchos
+            if opts.averageReps
+                echoData = niftiread(ase_files{e});              % unaveraged frames of this echo
+            else
+                echoData = aseData_combined(:,:,:,(e-1)*ndTEs + (1:ndTEs));
+            end
+            [qual.sigma(:,:,:,e), qual.S0(:,:,:,e)] = estimateRepNoise(echoData, repInds, 'baseInds', baseInds);
+        end
+        clear echoData
+        qual.SNR = qual.S0 ./ qual.sigma;
+    end
     nt = size(aseData_combined,4);
     assert(nt==nFrames,"Combined ASE data has %d frames but the frame map expects %d.",nt,nFrames);
     %{
@@ -170,8 +229,11 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
 
     t_crit = 1/(gamma*(4/3)*pi*dChi_0*Hct*(1-StO2_max)*B0)*1000;
     t_crit = round(1.5*t_crit,3);
-    t_crit_lower = max(0,t_crit-opts.tCrit_buffer);
-    t_crit_upper = t_crit+opts.tCrit_buffer;
+    tcBuf = opts.tCrit_buffer(:).';
+    assert(any(numel(tcBuf) == [1 2]) && all(tcBuf >= 0), 'tCrit_buffer must be a scalar or [below above], >= 0 (ms).');
+    if isscalar(tcBuf), tcBuf = [tcBuf tcBuf]; end
+    t_crit_lower = max(0,t_crit-tcBuf(1));
+    t_crit_upper = t_crit+tcBuf(2);
     [~,critInd] = min(abs(taus_full-t_crit));
     [~,critInd_lower] = min(abs(taus_full-t_crit_lower));
     [~,critInd_upper] = min(abs(taus_full-t_crit_upper));
@@ -186,15 +248,93 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
     shortIndsPretty = compressIntArr(shortInds);
     longIndsPretty = compressIntArr(longInds);
     if v; fprintf(['Computed critical time (1.5x): %0.2fms (at idx %d)\n' ...
-                   '\t- %0.1fms buffer => [%0.1fms-%0.1fms] = crit-window\n' ...
+                   '\t- -%0.1f/+%0.1fms buffer => [%0.1fms-%0.1fms] = crit-window\n' ...
                    '\t=> - Short Regime: [%0.1f:%0.1f]ms (frames %s)\n' ...
                    '\t   - Long Regime:  [%0.1f:%0.1f]ms (frames %s)\n'], ...
                    t_crit,critInd, ...
-                   opts.tCrit_buffer,taus_full(critInd_lower),taus_full(critInd_upper),...
+                   tcBuf(1),tcBuf(2),taus_full(critInd_lower),taus_full(critInd_upper),...
                    min(shortTimes,[],'omitmissing'),max(shortTimes,[],'omitmissing'),shortIndsPretty, ...
                    min(longTimes,[],'omitmissing'),max(longTimes,[],'omitmissing'),longIndsPretty);
     end
     
+    %% Z-shim: through-slice gradient estimate and (optional) correction
+    if needZshim
+        szV = size(ase_sorted,1:3);
+        dz  = info.SliceThickness_mm/1000;                 % m, per echo
+        qual.Gz         = NaN([szV, nEchos]);
+        qual.zshimAmp   = NaN([szV, nEchos]);
+        qual.zshimAtten = NaN([szV, nEchos]);
+        qual.zshimEdge  = zeros([szV, nEchos]);
+        tDeph = NaN(nEchos,1);  shimY = cell(1,nEchos);  shimM = cell(1,nEchos);
+        for e = 1:nEchos
+            idx = find(frameEcho == e & ismember(frameSrc, info.zShimInds));
+            [~,ord] = sort(frameSrc(idx));  idx = idx(ord);   % same order as info.zMoments
+            tD = abs(taus_full(idx));
+            assert(all(abs(tD - tD(1)) < 1e-6), 'Echo %d z-shim frames have different dephasing times.', e);
+            o = fitZshimGradient(ase_sorted(:,:,:,idx), info.zMoments(:,e), tD(1)/1000, dz(e), ...
+                                 'GzRange', q.zshim_GzRange, 'GzStep', q.zshim_GzStep);
+            qual.Gz(:,:,:,e) = o.Gz;          qual.zshimAmp(:,:,:,e)   = o.A;
+            qual.zshimAtten(:,:,:,e) = o.atten; qual.zshimEdge(:,:,:,e) = double(o.edge);
+            tDeph(e) = tD(1);  shimY{e} = ase_sorted(:,:,:,idx);  shimM{e} = info.zMoments(:,e);
+        end
+        % Gz used for the correction: one joint estimate from all echoes (the same physical
+        % gradient), or each echo's own. The per-echo estimates stay in qual.Gz (diagnostics,
+        % bit 7); with the joint fit, amplitude/attenuation/edge come from the joint fit.
+        GzCorr = qual.Gz;
+        if q.zshim_jointGz && nEchos > 1
+            oj = fitZshimGradientJoint(shimY, shimM, tDeph/1000, dz(:), ...
+                                       'GzRange', q.zshim_GzRange, 'GzStep', q.zshim_GzStep);
+            qual.GzJoint = oj.Gz;
+            GzCorr = repmat(oj.Gz, 1, 1, 1, nEchos);
+            qual.zshimAmp = oj.A;  qual.zshimAtten = oj.atten;  qual.zshimEdge = double(oj.edge);
+        end
+        clear shimY
+        % summaries over voxels with real signal (echo-1 amplitude > 0.2*p99; background
+        % voxels would otherwise dominate)
+        A1 = qual.zshimAmp(:,:,:,1);
+        sig = A1 > 0.2*prctile(A1(:),99);
+        if v
+            for e = 1:nEchos
+                Ge = qual.Gz(:,:,:,e);  Ee = qual.zshimEdge(:,:,:,e);
+                fprintf('Z-shim echo %d: t_deph=%.1fms, median Gz=%.1f uT/m (own fit), %.1f%% edge-flagged in the correction fit (voxels with signal)\n', ...
+                    e, tDeph(e), median(Ge(sig),'omitnan'), 100*mean(Ee(sig)>0));
+            end
+            if isfield(qual,'GzJoint')
+                fprintf('Z-shim joint fit (used for correction): median Gz=%.1f uT/m (voxels with signal)\n', ...
+                    median(qual.GzJoint(sig),'omitnan'));
+            end
+        end
+        % attenuation per voxel and frame (each echo's frames use that echo's Gz); voxels
+        % without a Gz estimate (no signal) are left uncorrected (F = 1)
+        usedLong = find(longMask & usePts_full);
+        nLow = zeros(szV);
+        % hard voxel x frame exclusion below Fcut; with F^2 weighting only frames where the
+        % sinc model itself is unreliable are dropped, otherwise (legacy) below Fmin
+        if q.zshim_weightF2, Fcut = q.zshim_Fcut; else, Fcut = q.zshim_Fmin; end
+        for f = 1:nFrames
+            if ~usePts_full(f), continue; end
+            e = frameEcho(f);
+            F = zshimAttenuation(GzCorr(:,:,:,e), taus_full(f)/1000, dz(e));
+            F(isnan(F)) = 1;
+            low = F < q.zshim_Fmin;
+            if ismember(f, usedLong), nLow = nLow + low; end
+            if opts.dBCorr
+                fr = ase_sorted(:,:,:,f) ./ F;
+                fr(F < Fcut) = NaN;                        % voxel x frame exclusion
+                ase_sorted(:,:,:,f) = fr;
+            end
+        end
+        qual.zshimFracLow = nLow / max(numel(usedLong),1);
+        qual.zshimFracLow(all(isnan(GzCorr),4)) = NaN;
+        if v && opts.dBCorr
+            if q.zshim_weightF2, wTxt = sprintf('F^2 weights, NaN below F=%.2f', Fcut);
+            else, wTxt = sprintf('unweighted, NaN below F=%.2f', Fcut); end
+            fprintf(['Applied z-shim dB correction (%s); Fmin=%.2f: in voxels with signal, %.1f%% have >=1 ' ...
+                     'long frame below Fmin, %.1f%% more than zshimFrac_max\n'], wTxt, q.zshim_Fmin, ...
+                100*mean(qual.zshimFracLow(sig) > 0), 100*mean(qual.zshimFracLow(sig) > q.zshimFrac_max));
+        end
+    end
+
     %handle optional further restrictions on fitting points:
     %excluded frames -> NaN (keeps size; fitting ignores NaNs)
     frameMask = ones(1,1,1,nFrames);
@@ -213,6 +353,14 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
 
     ase_short = ase_sorted(:,:,:,shortInds_good,:);
     ase_long = ase_sorted(:,:,:,longInds_good,:);
+
+    % z-shim correction weights: dividing by F scales the log-space noise by 1/F, so each
+    % corrected voxel-frame gets weight F^2 in the fits (empty = unweighted, the default)
+    wLong = [];  wShort = [];
+    if needZshim && opts.dBCorr && q.zshim_weightF2
+        wLong  = zshimWeights(GzCorr, taus_full(longInds_good),  frameEcho(longInds_good),  dz);
+        wShort = zshimWeights(GzCorr, taus_full(shortInds_good), frameEcho(shortInds_good), dz);
+    end
         
 
     resolvedPaths = struct;
@@ -220,15 +368,55 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
                      "R2P",opts.physBd_R2P,...
                      "vCBV",opts.physBd_vCBV,...
                      "OEF",opts.physBd_OEF);
-    if any(contains(opts.writeOpts,{'maps','coeffs'}))
-        %If either maps or fit coeffs are asked for, do global fits
+    wantStats = any(contains(opts.writeOpts,'stats')) && ~isempty(opts.segFiles);
+    if any(contains(opts.writeOpts,{'maps','coeffs'})) || (q.enabled && wantStats)
+        %If either maps or fit coeffs are asked for, do global fits.
+        %The voxel quality mask also needs them, so they always run when it is applied to stats.
         fitRes = fitASERegimes(ase_long, ase_short, taus_long, TEs_long, taus_short, TEs_short, nEchos, ...
-                    (4/3)*pi*gamma*dChi_0*Hct*B0, []);
+                    (4/3)*pi*gamma*dChi_0*Hct*B0, [], wLong, wShort);
         B_long = fitRes.BL;
         B_short = fitRes.BS;
         % rms_long = fit.rmsL;
         % rms_short = fit.rmsS;
         rawMaps = struct('R2',fitRes.R2,'R2P',fitRes.R2P,'vCBV',fitRes.vCBV,'OEF',fitRes.OEF);
+
+        %% fit extensions (quality diagnostics): vCBV consistency and per-echo R2'
+        if needExt
+            if ~isempty(fitRes.k)
+                qual.vCBV_quad = fitRes.vCBV_quad;
+                % noise factor per combined frame: averaged sweep frames have sigma/sqrt(nReps)
+                facFrame = ones(nFrames,1);
+                if opts.averageReps, facFrame(1:nSweep*nEchos) = 1/sqrt(nReps); end
+                sigLog = struct('sigma',qual.sigma, ...
+                    'echoL',frameEcho(longInds_good), 'facL',facFrame(longInds_good), ...
+                    'echoS',frameEcho(shortInds_good),'facS',facFrame(shortInds_good), ...
+                    'wL',wLong,'wS',wShort);
+                c = vcbvConsistency(ase_long, ase_short, fitRes.XL, fitRes.XS, fitRes.TES, fitRes, sigLog);
+                qual.vCBV_SE = c.SE_int;  qual.vCBVquad_SE = c.SE_quad;  qual.vCBV_z = c.z;
+                qual.k_SE = c.SE_k;  qual.kZ = c.kZ;
+            else
+                warning('Short regime has no tau^2 column: vCBV_quad / vCBV_z not computed.');
+            end
+            if nEchos == 2
+                pe = fitR2PerEcho(ase_long, taus_long, frameEcho(longInds_good), fitRes.rmsL, fitRes.nValidL, wLong);
+                qual.R2P_e1 = pe.R2P_e1;  qual.R2P_e2 = pe.R2P_e2;
+                qual.R2P_Fstat = pe.Fstat;  qual.R2P_pval = pe.pval;
+            end
+        end
+
+        %% voxel quality mask (uses raw, unclamped maps)
+        if q.enabled
+            [qual.keep, qual.flags, qual.bitInfo, qual.qInfo] = computeVoxelQuality(rawMaps, qual, physBds, q);
+            if v && q.useVein
+                fprintf('Vein criterion (%s): threshold vCBV > %.4g (reference median %.4g over %d tissue voxels)\n', ...
+                    q.vein_mode, qual.qInfo.veinThreshold, qual.qInfo.veinRef, qual.qInfo.veinRefN);
+            end
+            if v
+                fprintf('Voxel quality: %d of %d voxels with a fit kept (whole FOV)\n', ...
+                    nnz(qual.keep & isfinite(rawMaps.vCBV)), nnz(isfinite(rawMaps.vCBV)));
+                disp(qual.bitInfo);
+            end
+        end
 
         C = exp(B_short(:,:,:,1)); %amplitude
         [imErr,~] = computeASEError(ase_sorted,taus_full,TEs_full,rawMaps.R2,rawMaps.R2P,rawMaps.vCBV,C,"normalize",opts.normErr);
@@ -279,6 +467,12 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         end
     end
     
+    %% write quality diagnostic maps
+    if any(contains(opts.writeOpts,'maps')) && ~isempty(fieldnames(qual))
+        overwriteMaps = any(contains(opts.overwriteOpts,'maps'));
+        resolvedPaths = writeQualityMaps(qual, templateHdr, opts.outPref, nEchos, overwriteMaps, v, resolvedPaths);
+    end
+
     if any(contains(opts.writeOpts,'stats')) && ~isempty(opts.segFiles)
         if v; fprintf('Organizing regions...\n'); end
         orig_state = warning;
@@ -290,19 +484,59 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         nVoxReg = full(sum(M,2));            % effective voxel count (weighted)
         % remove the size-equality assert and the buildMembership call
         nReg = height(LUT);
+
+        % ---- voxel quality: hard exclusion (and optional noise weighting) ----
+        useQ = q.enabled && isfield(qual,'keep');
+        if useQ
+            M0 = M;                                            % occupancy before exclusion
+            M  = M .* double(qual.keep(:).');
+            nVoxKept = full(sum(M,2));
+            if q.noiseWeighting
+                % weight ~ 1/var(log S) = S^2/sigma^2 (echo-1 SNR^2); scaled so a region's
+                % total weight stays comparable. Off by default until compared.
+                w = qual.SNR(:,:,:,1).^2;  w(~isfinite(w)) = 0;
+                M = M .* (w(:).' / median(w(qual.keep & w > 0)));
+            end
+            lowKept = nVoxKept < q.minVoxKept;
+            if v; fprintf('Quality mask: %.1f%% of ROI occupancy excluded; %d region(s) below minVoxKept=%g\n', ...
+                    100*(1 - sum(nVoxKept)/sum(nVoxReg)), nnz(lowKept & nVoxReg > 0), q.minVoxKept); end
+        end
         
     
+        % ---- z-shim: one fixed weight per voxel for the region means ----
+        % Same weight in every frame, so every frame of a region curve averages the same voxel
+        % mix (no curve-shape bias); weight = F^2 at the voxel's worst used frame, and 0 if any
+        % used frame was dropped (F < Fcut), which keeps the voxel set identical across frames.
+        if ~isempty(wLong)
+            vw = min(min(wLong,[],[4 5]), min(wShort,[],[4 5]));
+            vw(vw < q.zshim_Fcut^2) = 0;
+            occTot  = full(sum(M,'all'));
+            occZero = full(sum(M(:, vw(:) == 0),'all'));
+            M = M .* double(vw(:).');
+            if v; fprintf(['Z-shim ROI voxel weights (F^2 at worst used frame): total ROI weight %.1f%% of ' ...
+                    'occupancy; %.1f%% of occupancy at weight 0 (a frame below Fcut)\n'], ...
+                    100*full(sum(M,'all'))/occTot, 100*occZero/occTot); 
+            end
+        end
+
         if v; fprintf('Averaging signal and fitting %d regions...\n',nReg); end
         meanLong  = regionMeans(ase_long,  M);
         meanShort = regionMeans(ase_short, M);
     
         oefScale = (4/3)*pi*gamma*dChi_0*Hct*B0;
-        roi = fitASERegimes(meanLong, meanShort, taus_long, TEs_long, taus_short, TEs_short, nEchos, oefScale, []);
+        wLongR = [];  wShortR = [];
+        if ~isempty(wLong)
+            wLongR  = regionWeights(ase_long,  wLong,  M);
+            wShortR = regionWeights(ase_short, wShort, M);
+        end
+        roi = fitASERegimes(meanLong, meanShort, taus_long, TEs_long, taus_short, TEs_short, nEchos, oefScale, [], ...
+                            wLongR, wShortR);
     
         if isempty(roi.R2), roi.R2 = NaN(nReg,1); end       % single echo: R2 unavailable
         roiRaw = struct('R2',roi.R2,'R2P',roi.R2P,'vCBV',roi.vCBV,'OEF',roi.OEF);
         roiBd  = applyPhysBounds(roiRaw, physBds, opts.physBdClipVal);
         nonEmpty = nVoxReg > 0;                              % regions with no voxels -> NaN
+        if useQ, nonEmpty = nonEmpty & ~lowKept; end         % too few kept voxels -> NaN
         for f = fieldnames(roiBd)'
             roiBd.(f{1})(~nonEmpty) = NaN;  roiRaw.(f{1})(~nonEmpty) = NaN;
         end
@@ -317,6 +551,9 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
             for f = {'OEF','R2P','vCBV','R2'}
                 roiData.([f{1} '_raw']) = roiRaw.(f{1})(:);
             end
+        end
+        if useQ
+            roiData = addQualityColumns(roiData, M0, nVoxReg, nVoxKept, qual, rawMaps);
         end
     
         overwriteStats = any(contains(opts.overwriteOpts,'stats'));
@@ -355,6 +592,56 @@ end
 
 
 
+function roiData = addQualityColumns(roiData, M0, nVoxReg, nVoxKept, qual, rawMaps)
+% ROI-table columns describing the voxel exclusion: kept occupancy, excluded fraction (total
+% and per criterion bit; bits overlap, so they need not sum to the total), and medians of the
+% raw voxel maps over the kept voxels of each region.
+    roiData.nVox_kept    = nVoxKept;
+    roiData.fracExcluded = 1 - nVoxKept ./ nVoxReg;
+    bi = qual.bitInfo;
+    for i = 1:height(bi)
+        if ~bi.Enabled(i), continue; end
+        hit = double(bitand(qual.flags(:), uint16(2^bi.Bit(i))) > 0).';
+        roiData.(sprintf('fracExcl_b%d_%s', bi.Bit(i), bi.Name{i})) = full(sum(M0 .* hit, 2)) ./ nVoxReg;
+    end
+    keepIdx = find(qual.keep(:));
+    Mk = M0(:, keepIdx) > 0;                                % kept members of each region
+    for f = {'OEF','R2P','vCBV','R2'}
+        x = rawMaps.(f{1})(keepIdx);
+        med = NaN(size(Mk,1),1);
+        for r = 1:size(Mk,1)
+            med(r) = median(x(Mk(r,:)), 'omitnan');
+        end
+        roiData.([f{1} '_med']) = med;
+    end
+end
+
+function resolvedPaths = writeQualityMaps(qual, templateHdr, outPref, nEchos, overwrite, v, resolvedPaths)
+% Write per-echo quality diagnostics (4th dim = echo) as <outPref>_<name>_e<k>,
+% and single maps as <outPref>_<name>. Every file gets a manifest entry.
+    if isfield(qual,'keep')
+        qual.qualityMask  = double(qual.keep);     % 1 = kept
+        qual.qualityFlags = double(qual.flags);    % uint16 bitmask, exact in single precision
+    end
+    perEcho = {'sigma','SNR','Gz','zshimAmp','zshimAtten','zshimEdge'};
+    for i = 1:numel(perEcho)
+        nm = perEcho{i};
+        if ~isfield(qual,nm) || isempty(qual.(nm)), continue; end
+        for e = 1:nEchos
+            key = sprintf('%s_e%d', nm, e);
+            resolvedPaths.(key) = writeMap(templateHdr, qual.(nm)(:,:,:,e), sprintf("%s_%s", outPref, key), ...
+                'verbose',v, 'overwrite',overwrite, 'mapName',key);
+        end
+    end
+    single = {'qualityMask','qualityFlags','csfFrac','GzJoint','zshimFracLow','vCBV_quad','vCBV_SE','vCBVquad_SE','vCBV_z','kZ','R2P_e1','R2P_e2','R2P_Fstat'};
+    for i = 1:numel(single)
+        nm = single{i};
+        if ~isfield(qual,nm) || isempty(qual.(nm)), continue; end
+        resolvedPaths.(nm) = writeMap(templateHdr, qual.(nm), sprintf("%s_%s", outPref, nm), ...
+            'verbose',v, 'overwrite',overwrite, 'mapName',nm);
+    end
+end
+
 function maps = applyPhysBounds(maps, physBds, clipVal)
 % Apply [lo hi] bounds to each field. NaN stays NaN in both modes.
     nms = fieldnames(physBds);
@@ -374,23 +661,28 @@ function maps = applyPhysBounds(maps, physBds, clipVal)
     end
 end
 
-function out = fitASERegimes(aseLong, aseShort, tausLong, TEsLong, tausShort, TEsShort, nEchos, oefScale, mask)
+function out = fitASERegimes(aseLong, aseShort, tausLong, TEsLong, tausShort, TEsShort, nEchos, oefScale, mask, wLong, wShort)
 % Shared by the voxelwise and ROI paths. ase*: X x Y x Z x N x R (or nReg x 1 x 1 x N x R).
 % taus/TEs in ms (column vectors). oefScale = (4/3)*pi*gamma*dChi_0*Hct*B0.
+% wLong/wShort: optional fit weights, same size as aseLong/aseShort (empty = OLS).
+    if nargin < 10, wLong = []; end
+    if nargin < 11, wShort = []; end
     tauL = abs(tausLong(:))/1000;   TEL = TEsLong(:)/1000;
     tauS = abs(tausShort(:))/1000;  TES = TEsShort(:)/1000;
     %Long regime:
     % fitting: ln(S) = ln(C) + vCBV − R2*TE − R2P*|dTE|
     if nEchos == 1
         %unable to compute R2 so we just regress against dTE:
-        [BL,rmsL,nL] = fitMultiRegressor(aseLong, [ones(numel(tauL),1), -tauL], mask);
+        XLdes = [ones(numel(tauL),1), -tauL];
+        [BL,rmsL,nL] = fitMultiRegressor(aseLong, XLdes, mask, [], wLong);
         % BL(:,:,:,1) = ln(C) + vCBV − R2*TE
         R2  = [];
         R2P = BL(:,:,:,2);
         modShort = aseShort;                 % constant TE: R2*TE cancels in vCBV
     else
         %here we can (and need) to get R2 so we regress against TE AND dTE
-        [BL,rmsL,nL] = fitMultiRegressor(aseLong, [ones(numel(tauL),1), -TEL, -tauL], mask);
+        XLdes = [ones(numel(tauL),1), -TEL, -tauL];
+        [BL,rmsL,nL] = fitMultiRegressor(aseLong, XLdes, mask, [], wLong);
         % B_long(:,:,:,1) = ln(C) + vCBV
         R2  = BL(:,:,:,2);
         R2P = BL(:,:,:,3);
@@ -406,14 +698,47 @@ function out = fitASERegimes(aseLong, aseShort, tausLong, TEsLong, tausShort, TE
     else
         Xs = ones(numel(tauS),1);            % all short frames at tau = 0: intercept only
     end
-    [BS,rmsS,nS] = fitMultiRegressor(modShort, Xs, mask);
+    [BS,rmsS,nS] = fitMultiRegressor(modShort, Xs, mask, [], wShort);
 
     vCBV = BL(:,:,:,1) - BS(:,:,:,1);
     OEF  = R2P ./ (vCBV * oefScale);
     OEF(vCBV <= 0 | R2P <= 0) = NaN;         % avoids negative/negative = spurious positive OEF
 
+    % quadratic (short-regime curvature) vCBV: ln S = c - 0.3*vCBV*(dw*tau)^2 and R2' = vCBV*dw
+    %   => k = -0.3*R2'^2/vCBV  =>  vCBV_quad = -0.3*R2'^2/k   (only defined for k < 0)
+    if size(Xs,2) == 2
+        k = BS(:,:,:,2);
+        vCBV_quad = -0.3*R2P.^2 ./ k;
+        vCBV_quad(~(k < 0)) = NaN;
+    else
+        k = [];  vCBV_quad = [];
+    end
+
     out = struct('BL',BL,'rmsL',rmsL,'nValidL',nL, 'BS',BS,'rmsS',rmsS,'nValidS',nS, ...
-                 'R2',R2,'R2P',R2P,'vCBV',vCBV,'OEF',OEF);
+                 'R2',R2,'R2P',R2P,'vCBV',vCBV,'OEF',OEF,'k',k,'vCBV_quad',vCBV_quad, ...
+                 'XL',XLdes,'XS',Xs,'TES',TES);
+end
+
+function out = fitR2PerEcho(aseLong, tausLong, echoLong, rmsJoint, nJoint, wLong)
+% Separate long-regime fits per echo (ln S = c_e - R2'_e*tau) and an F-test of the joint
+% model (shared R2', TE term) against the split model (4 parameters).
+%   F = (RSS_joint - RSS_split) / (RSS_split/(n-4)),  df = (1, n-4)
+    tau = abs(tausLong(:))/1000;
+    sz = size(aseLong,1:3);
+    R2P = NaN([sz 2]);  rss = zeros(sz);  n = zeros(sz);
+    for e = 1:2
+        sel = echoLong(:) == e;
+        if isempty(wLong), we = []; else, we = wLong(:,:,:,sel); end
+        [B,r,ne] = fitMultiRegressor(aseLong(:,:,:,sel), [ones(nnz(sel),1), -tau(sel)], [], [], we);
+        R2P(:,:,:,e) = B(:,:,:,2);
+        rss = rss + r.^2.*ne;  n = n + ne;
+    end
+    rssJ = rmsJoint.^2 .* nJoint;
+    F = (rssJ - rss) ./ (rss ./ (n - 4));
+    F(n <= 4 | ~isfinite(F)) = NaN;
+    F(F < 0) = 0;                           % nested models: negative only by round-off
+    p = 1 - fcdf(F, 1, n - 4);
+    out = struct('R2P_e1',R2P(:,:,:,1),'R2P_e2',R2P(:,:,:,2),'Fstat',F,'pval',p);
 end
 
 
@@ -434,4 +759,39 @@ function [meanSig, nValid] = regionMeans(data, M)
     end
     meanSig = reshape(sumSig ./ nValid, nReg,1,1,sz(4),sz(5));   % 0/0 -> NaN
     nValid  = reshape(nValid,           nReg,1,1,sz(4),sz(5));
+end
+
+function w = zshimWeights(Gz, taus, echo, dz)
+% F^2 fit weights per voxel and frame for the z-shim-corrected data (same F as the correction:
+% each frame uses its own echo's Gz and t = |tau|; voxels without a Gz estimate get 1).
+% Gz: X x Y x Z x nEchos (uT/m); taus in ms; dz per echo (m).  w: X x Y x Z x N (single)
+    sz = size(Gz,1:3);  N = numel(taus);
+    w = ones([sz N], 'single');
+    for f = 1:N
+        F = zshimAttenuation(Gz(:,:,:,echo(f)), taus(f)/1000, dz(echo(f)));
+        F(isnan(F)) = 1;
+        w(:,:,:,f) = F.^2;
+    end
+end
+
+function wR = regionWeights(data, w, M)
+% Weight of each region-mean frame for the ROI fit. The mean of corrected signals has log-space
+% variance proportional to sum(m^2/F^2)/sum(m)^2, against sum(m^2)/sum(m)^2 without attenuation,
+% so its relative weight is sum(m^2)/sum(m^2/w) over the voxels valid in that frame (w = F^2).
+% data, w: X x Y x Z x N x R  ->  wR: nReg x 1 x 1 x N x R
+    sz = size(data);  sz(end+1:5) = 1;
+    nReg = size(M,1);  nCol = sz(4)*sz(5);
+    D  = reshape(data, [], nCol);
+    Wv = reshape(w, [], nCol);
+    M2 = M.^2;
+    num = zeros(nReg,nCol);  den = zeros(nReg,nCol);
+    for c = 1:16:nCol
+        cols = c:min(c+15,nCol);
+        ok = isfinite(D(:,cols)) & D(:,cols) > 0;
+        iw = double(ok) ./ double(Wv(:,cols));
+        iw(~ok) = 0;
+        num(:,cols) = M2*double(ok);
+        den(:,cols) = M2*iw;
+    end
+    wR = reshape(num ./ den, nReg,1,1,sz(4),sz(5));    % 0/0 -> NaN (frame unused anyway)
 end
