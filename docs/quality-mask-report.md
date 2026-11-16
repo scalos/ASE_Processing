@@ -1425,3 +1425,22 @@ with the regime-transition analysis.
 
 **Scratch state:** the scratch subject now holds the new motion-corrected data. The Phase 0
 baseline fit was made with the old ones.
+
+### AnLab fitting steps not adopted (decided 2026-11-16)
+
+Robust (bisquare) regression and pre-fit smoothing are **left out for now.**
+
+- **Robust regression:**
+  - It moves medians by about 1.5–2 points.
+  - Its benefit concentrates in poorly fitted voxels, which the quality mask now excludes.
+  - It is incompatible with the F²-weighted least squares and with the analytic SEs (vCBV SE,
+    vCBV z, SE(k)) behind bits 1 and 2.
+- **Smoothing:**
+  - ROI values already come from region-averaged signal.
+  - Smoothing mixes signal across tissue boundaries: the AnLab vCBV gap rises from +8% at no CSF
+    to +72–101% above 25% CSF.
+  - It would also blur the per-voxel quality flags.
+- **Both are small** next to the fitting-window dependence of vCBV/OEF, which is the open
+  full-model question.
+- **If comparability with AnLab-processed data is needed later:** add an AnLab-compatible preset
+  rather than changing the defaults.
