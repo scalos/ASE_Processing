@@ -4,7 +4,8 @@ function [dTEs, zShimming, TEs, info] = readASEHeader(hdr_File)
 %   dTEs      : ndTE x 1            dTE per frame (ms), acquisition order (not sorted)
 %   zShimming : ndTE x nEchos       z-moment per frame (Tms/m), same frame order as dTEs
 %   TEs       : nEchos x 1          echo times (ms), ordered by echo number
-%   info      : struct (optional 4th output) with B0, ImagingFrequency, MaxDTE_ms,
+%   info      : struct (optional 4th output) with B0 (actual field, T; from B0_T or the imaging
+%               frequency), B0_nominal, ImagingFrequency, MaxDTE_ms,
 %               StepDTE_ms, nSweep, nReps, nZshimming, repInds, zShimInds,
 %               zMoments (nZshim x nEchos, T*s/m), SliceThickness_mm (nEchos x 1,
 %               NaN if absent from the header), series, file
@@ -88,7 +89,14 @@ function [dTEs, zShimming, TEs, info] = readASEHeader(hdr_File)
     
     if nargout > 3
         info = struct();
-        info.B0               = h.MagneticFieldStrength;
+        % actual field strength: B0_T written by asePreProcess.sh, else derived from the imaging
+        % frequency (MagneticFieldStrength is the nominal value, e.g. 3 for a 2.89 T Prisma)
+        if isfield(h,'B0_T') && ~isempty(h.B0_T)
+            info.B0 = h.B0_T;
+        else
+            info.B0 = h.ImagingFrequency / 42.577478518;
+        end
+        info.B0_nominal       = h.MagneticFieldStrength;
         info.ImagingFrequency = h.ImagingFrequency;
         info.nEchos           = nEchos;
         info.nReps            = nReps;

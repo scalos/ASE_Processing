@@ -221,6 +221,7 @@ json_num() {
 dte_field() { tr -d '\r' < "$1" | sed -n "$2"; }
 count_lines() { printf '%s\n' "$1" | grep -c .; }
 
+gammaBarMHz=42.577478518      # proton gyromagnetic ratio / 2pi (MHz/T), CODATA 2018
 dteExpr='s/.*_DTE=\([-0-9.]*\)us_.*/\1/p'
 zmExpr='s/.*ZMoment=\([^T]*\)Tms\/m.*/\1/p'
 maxExpr='s/.*_MaxDTE=\([-0-9.]*\)us.*/\1/p'
@@ -602,14 +603,19 @@ build_header() {
 		blocks+="${blocks:+,$nl}$block"
 	done
 
+	# actual field strength from the proton imaging frequency (MagneticFieldStrength is the nominal
+	# value, e.g. 3 for a 2.89 T Prisma); used by aseFit.sh for t_crit and the OEF scale
+	b0T=$(awk -v f="$freq" -v g="$gammaBarMHz" 'BEGIN { printf "%.6f", f / g }')
 	{
 		printf '{\n'
 		printf '  "subject": "%s",\n' "$subjID"
 		printf '  "created": "%s",\n' "$runTimestamp"
-		printf '  "units": {"MagneticFieldStrength": "T", "ImagingFrequency": "MHz", "EchoTime": "ms", "dTE": "ms", "MaxDTE": "ms", "StepDTE": "ms", "ZMoment": "Tms/m"},\n'
+		printf '  "units": {"MagneticFieldStrength": "T", "ImagingFrequency": "MHz", "B0_T": "T", "EchoTime": "ms", "dTE": "ms", "MaxDTE": "ms", "StepDTE": "ms", "ZMoment": "Tms/m"},\n'
 		printf '  "frame_order": "acquisition (header row) order; frame i of each echo file matches dTE_ms[i] and ZMoment[i]; not sorted",\n'
 		printf '  "MagneticFieldStrength": %s,\n' "$B0"
 		printf '  "ImagingFrequency": %s,\n' "$freq"
+		printf '  "B0_T": %s,\n' "$b0T"
+		printf '  "B0_source": "ImagingFrequency / %s MHz/T (proton gamma/2pi)",\n' "$gammaBarMHz"
 		printf '  "nEchos": %d,\n' "$nEchos"
 		printf '  "echos": [\n%s\n  ]\n' "$blocks"
 		printf '}\n'

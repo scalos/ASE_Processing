@@ -25,7 +25,7 @@ fitsSubdir=fits
 outPref=ase_fit_results
 matlabBin=matlab
 matdir=$repoDir
-B0=""                    # empty = read MagneticFieldStrength from each subject's header
+B0=""                    # empty = read B0_T (actual field, from the imaging frequency) from each subject's header
 configFile=""
 fitOverrides=""          # accumulated "key":value items from --fit
 
@@ -67,7 +67,8 @@ Pipeline options (override the config; defaults in brackets):
   --outPref <str>             [$outPref]
   --matlabBin <path>          [$matlabBin]
   --matdir <path>             MATLAB code location [$matdir]
-  --B0 <value>                Override field strength (default: from header)
+  --B0 <value>                Override field strength in T (default: B0_T in each subject's header,
+                              i.e. ImagingFrequency / 42.5775; written by asePreProcess.sh)
 
 Logging / retry:
   --omitFailLog               Do not keep a log file
@@ -346,9 +347,9 @@ for x in "${subjlist[@]}"; do
 	# ---- B0 ----
 	subjB0=$B0
 	if [[ -z $subjB0 && -e $hdrPth ]]; then
-		subjB0=$(tr -d '\r' < "$hdrPth" | sed -n 's/^[[:space:]]*"MagneticFieldStrength"[[:space:]]*:[[:space:]]*\([-0-9.eE+]*\).*/\1/p' | head -n 1)
+		subjB0=$(tr -d '\r' < "$hdrPth" | sed -n 's/^[[:space:]]*"B0_T"[[:space:]]*:[[:space:]]*\([-0-9.eE+]*\).*/\1/p' | head -n 1)
 		if ! is_num "$subjB0"; then
-			okay=0; missingReasons+="  - could not read MagneticFieldStrength from $hdrPth (use --B0)${nl}"
+			okay=0; missingReasons+="  - no B0_T in $hdrPth (header predates it): rerun asePreProcess.sh --regenHdr, or pass --B0${nl}"
 		fi
 	fi
 

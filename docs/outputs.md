@@ -6,7 +6,7 @@
 |---|---|---|
 | `ase_<series>.nii`, `dcm_hdr_<series>.json` | 1 | converted echo series (98 frames) and dcm2niix sidecar |
 | `dcm_hdr_<series>_dtes.txt` | 2 | per frame: DICOM file, frame index, acquisition time (ms since midnight), dTE / z-moment / rep / echo |
-| `ase_hdr.json` | 3 | combined header: TEs, dTEs, z-moments, `SliceThickness_mm` per echo |
+| `ase_hdr.json` | 3 | combined header: actual field `B0_T` (from the imaging frequency) and nominal `MagneticFieldStrength`, `ImagingFrequency`; per echo: TE, dTEs, z-moments, `SliceThickness_mm` |
 | `ase_base.nii.gz` | 4 | echo-1 frame 0 (spin echo): motion and registration reference |
 | `ase_e<k>_proc.nii.gz`, `ase_e<k>_mc.1D` | 4 | motion-corrected echoes and motion parameters (with `motionMode=echo1`, the echo-2 `.1D` is a copy of echo 1's) |
 | `ase_e1_mc_mat.aff12.1D` | 4 | per-frame echo-1 transforms (`motionMode=echo1`) |
