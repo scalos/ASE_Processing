@@ -16,7 +16,8 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
 
         % Fitting options:
         opts.tauRange = []; %ms
-        opts.tCrit_buffer = 3; %ms; scalar (symmetric) or [below above] t_crit
+        opts.tCrit_buffer = [3 12]; %ms; [below above] t_crit (scalar = symmetric). Above > below because
+                                    %   the long regime is reached late when true t_c > assumed (StO2_max); see docs Q3
         opts.averageReps = false %whether to average repetitions before fitting 
         opts.dBCorr = false %Through-slice (z-shim based) dB correction; settings in opts.quality.zshim_*
         opts.tauUsePts = []; %use to restrict tau points used in all fitting operations.  ndTE x nEchos

@@ -1045,3 +1045,33 @@ written as diagnostics.
     underestimated by the same amount in this subject.
   - The buffer can reduce this but not remove it, because echo 1 stops at 44 ms.
   - One subject, idealized model (cylinders, static dephasing, no diffusion).
+
+**Decision (option 1): `tCrit_buffer` default is now `[3, 12]`.**
+- It is set in `BashFiles/ase_config.json` and as the `ASE_fitting` default, so the two agree.
+- **This is the first change to default outputs on this branch.** Default runs no longer match
+  the Phase 0 baseline.
+- Scratch subject, default run (no dBCorr), against baseline:
+  - Finite-OEF regions: 145 → 143.
+  - Median across regions: OEF 0.268 → 0.249, R2′ 8.98 → 9.23, vCBV 0.125 → 0.140.
+
+**Simulation script:** `Scripts/regimeBoundarySim.m`, parameterized: OEF, ζ, buffers,
+StO2_max and protocol. It reproduces the tables above.
+
+**StO2_max** (only used to compute t_crit; noise-free simulation, ζ = 0.06):
+
+| StO2_max (1.5·t_c) | buffer | short / echo-1 long frames | ΔOEF at true OEF 0.20 / 0.30 / 0.40 / 0.50 |
+|---|---|---|---|
+| 0.6 (17.4 ms) | [3,3] | 15 / 24 | +27 / +7 / +5 / +6 % |
+| 0.6 (17.4 ms) | [3,12] | 15 / 15 | +17 / +2 / +6 / +7 % |
+| 0.7 (23.1 ms) | [3,3] | 21 / 18 | +20 / +3 / +4 / +5 % |
+| 0.8 (34.7 ms) | [3,3] | 32 / 7 | +10 / 0 / +4 / 0 % |
+| 0.8 | [3,12] | 32 / 0 | no fit (no echo-1 long frames, R2 not identifiable) |
+
+What the table shows:
+- **Raising StO2_max reduces the low-OEF bias.**
+- **The longer short regime costs little in the model.**
+- **The real cost is precision:** fewer echo-1 long frames weaken the R2 identification. This
+  simulation has no noise, so it doesn't show that cost. It needs a Monte Carlo before any
+  change.
+- **A floor of about 5% at high OEF remains** in every setting. There, the short frames
+  (≤ 14 ms) run past the true t_c (9–12 ms).

@@ -39,7 +39,7 @@
   },
   "fit": {
     "tauRange": [],
-    "tCrit_buffer": 3,
+    "tCrit_buffer": [3, 12],
     "averageReps": false,
     "dBCorr": false,
     "physBd_R2": [0, "Inf"],
