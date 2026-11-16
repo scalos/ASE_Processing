@@ -287,6 +287,9 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         % without a Gz estimate (no signal) are left uncorrected (F = 1)
         usedLong = find(longMask & usePts_full);
         nLow = zeros(szV);
+        % hard voxel x frame exclusion below Fcut; with F^2 weighting only frames where the
+        % sinc model itself is unreliable are dropped, otherwise (legacy) below Fmin
+        if q.zshim_weightF2, Fcut = q.zshim_Fcut; else, Fcut = q.zshim_Fmin; end
         for f = 1:nFrames
             if ~usePts_full(f), continue; end
             e = frameEcho(f);
@@ -296,15 +299,17 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
             if ismember(f, usedLong), nLow = nLow + low; end
             if opts.dBCorr
                 fr = ase_sorted(:,:,:,f) ./ F;
-                fr(low) = NaN;                             % voxel x frame exclusion
+                fr(F < Fcut) = NaN;                        % voxel x frame exclusion
                 ase_sorted(:,:,:,f) = fr;
             end
         end
         qual.zshimFracLow = nLow / max(numel(usedLong),1);
         qual.zshimFracLow(all(isnan(qual.Gz),4)) = NaN;
         if v && opts.dBCorr
-            fprintf(['Applied z-shim dB correction (Fmin=%.2f); in voxels with signal, %.1f%% have >=1 ' ...
-                     'long frame excluded, %.1f%% more than zshimFrac_max\n'], q.zshim_Fmin, ...
+            if q.zshim_weightF2, wTxt = sprintf('F^2 weights, NaN below F=%.2f', Fcut);
+            else, wTxt = sprintf('unweighted, NaN below F=%.2f', Fcut); end
+            fprintf(['Applied z-shim dB correction (%s); Fmin=%.2f: in voxels with signal, %.1f%% have >=1 ' ...
+                     'long frame below Fmin, %.1f%% more than zshimFrac_max\n'], wTxt, q.zshim_Fmin, ...
                 100*mean(qual.zshimFracLow(sig) > 0), 100*mean(qual.zshimFracLow(sig) > q.zshimFrac_max));
         end
     end
@@ -327,6 +332,14 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
 
     ase_short = ase_sorted(:,:,:,shortInds_good,:);
     ase_long = ase_sorted(:,:,:,longInds_good,:);
+
+    % z-shim correction weights: dividing by F scales the log-space noise by 1/F, so each
+    % corrected voxel-frame gets weight F^2 in the fits (empty = unweighted, the default)
+    wLong = [];  wShort = [];
+    if needZshim && opts.dBCorr && q.zshim_weightF2
+        wLong  = zshimWeights(qual.Gz, taus_full(longInds_good),  frameEcho(longInds_good),  dz);
+        wShort = zshimWeights(qual.Gz, taus_full(shortInds_good), frameEcho(shortInds_good), dz);
+    end
         
 
     resolvedPaths = struct;
@@ -339,7 +352,7 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         %If either maps or fit coeffs are asked for, do global fits.
         %The voxel quality mask also needs them, so they always run when it is applied to stats.
         fitRes = fitASERegimes(ase_long, ase_short, taus_long, TEs_long, taus_short, TEs_short, nEchos, ...
-                    (4/3)*pi*gamma*dChi_0*Hct*B0, []);
+                    (4/3)*pi*gamma*dChi_0*Hct*B0, [], wLong, wShort);
         B_long = fitRes.BL;
         B_short = fitRes.BS;
         % rms_long = fit.rmsL;
@@ -355,14 +368,15 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
                 if opts.averageReps, facFrame(1:nSweep*nEchos) = 1/sqrt(nReps); end
                 sigLog = struct('sigma',qual.sigma, ...
                     'echoL',frameEcho(longInds_good), 'facL',facFrame(longInds_good), ...
-                    'echoS',frameEcho(shortInds_good),'facS',facFrame(shortInds_good));
+                    'echoS',frameEcho(shortInds_good),'facS',facFrame(shortInds_good), ...
+                    'wL',wLong,'wS',wShort);
                 c = vcbvConsistency(ase_long, ase_short, fitRes.XL, fitRes.XS, fitRes.TES, fitRes, sigLog);
                 qual.vCBV_SE = c.SE_int;  qual.vCBVquad_SE = c.SE_quad;  qual.vCBV_z = c.z;
             else
                 warning('Short regime has no tau^2 column: vCBV_quad / vCBV_z not computed.');
             end
             if nEchos == 2
-                pe = fitR2PerEcho(ase_long, taus_long, frameEcho(longInds_good), fitRes.rmsL, fitRes.nValidL);
+                pe = fitR2PerEcho(ase_long, taus_long, frameEcho(longInds_good), fitRes.rmsL, fitRes.nValidL, wLong);
                 qual.R2P_e1 = pe.R2P_e1;  qual.R2P_e2 = pe.R2P_e2;
                 qual.R2P_Fstat = pe.Fstat;  qual.R2P_pval = pe.pval;
             end
@@ -468,7 +482,13 @@ function ASE_fitting(B0,hdr_file,ase_files,opts)
         meanShort = regionMeans(ase_short, M);
     
         oefScale = (4/3)*pi*gamma*dChi_0*Hct*B0;
-        roi = fitASERegimes(meanLong, meanShort, taus_long, TEs_long, taus_short, TEs_short, nEchos, oefScale, []);
+        wLongR = [];  wShortR = [];
+        if ~isempty(wLong)
+            wLongR  = regionWeights(ase_long,  wLong,  M);
+            wShortR = regionWeights(ase_short, wShort, M);
+        end
+        roi = fitASERegimes(meanLong, meanShort, taus_long, TEs_long, taus_short, TEs_short, nEchos, oefScale, [], ...
+                            wLongR, wShortR);
     
         if isempty(roi.R2), roi.R2 = NaN(nReg,1); end       % single echo: R2 unavailable
         roiRaw = struct('R2',roi.R2,'R2P',roi.R2P,'vCBV',roi.vCBV,'OEF',roi.OEF);
@@ -599,9 +619,12 @@ function maps = applyPhysBounds(maps, physBds, clipVal)
     end
 end
 
-function out = fitASERegimes(aseLong, aseShort, tausLong, TEsLong, tausShort, TEsShort, nEchos, oefScale, mask)
+function out = fitASERegimes(aseLong, aseShort, tausLong, TEsLong, tausShort, TEsShort, nEchos, oefScale, mask, wLong, wShort)
 % Shared by the voxelwise and ROI paths. ase*: X x Y x Z x N x R (or nReg x 1 x 1 x N x R).
 % taus/TEs in ms (column vectors). oefScale = (4/3)*pi*gamma*dChi_0*Hct*B0.
+% wLong/wShort: optional fit weights, same size as aseLong/aseShort (empty = OLS).
+    if nargin < 10, wLong = []; end
+    if nargin < 11, wShort = []; end
     tauL = abs(tausLong(:))/1000;   TEL = TEsLong(:)/1000;
     tauS = abs(tausShort(:))/1000;  TES = TEsShort(:)/1000;
     %Long regime:
@@ -609,7 +632,7 @@ function out = fitASERegimes(aseLong, aseShort, tausLong, TEsLong, tausShort, TE
     if nEchos == 1
         %unable to compute R2 so we just regress against dTE:
         XLdes = [ones(numel(tauL),1), -tauL];
-        [BL,rmsL,nL] = fitMultiRegressor(aseLong, XLdes, mask);
+        [BL,rmsL,nL] = fitMultiRegressor(aseLong, XLdes, mask, [], wLong);
         % BL(:,:,:,1) = ln(C) + vCBV − R2*TE
         R2  = [];
         R2P = BL(:,:,:,2);
@@ -617,7 +640,7 @@ function out = fitASERegimes(aseLong, aseShort, tausLong, TEsLong, tausShort, TE
     else
         %here we can (and need) to get R2 so we regress against TE AND dTE
         XLdes = [ones(numel(tauL),1), -TEL, -tauL];
-        [BL,rmsL,nL] = fitMultiRegressor(aseLong, XLdes, mask);
+        [BL,rmsL,nL] = fitMultiRegressor(aseLong, XLdes, mask, [], wLong);
         % B_long(:,:,:,1) = ln(C) + vCBV
         R2  = BL(:,:,:,2);
         R2P = BL(:,:,:,3);
@@ -633,7 +656,7 @@ function out = fitASERegimes(aseLong, aseShort, tausLong, TEsLong, tausShort, TE
     else
         Xs = ones(numel(tauS),1);            % all short frames at tau = 0: intercept only
     end
-    [BS,rmsS,nS] = fitMultiRegressor(modShort, Xs, mask);
+    [BS,rmsS,nS] = fitMultiRegressor(modShort, Xs, mask, [], wShort);
 
     vCBV = BL(:,:,:,1) - BS(:,:,:,1);
     OEF  = R2P ./ (vCBV * oefScale);
@@ -654,7 +677,7 @@ function out = fitASERegimes(aseLong, aseShort, tausLong, TEsLong, tausShort, TE
                  'XL',XLdes,'XS',Xs,'TES',TES);
 end
 
-function out = fitR2PerEcho(aseLong, tausLong, echoLong, rmsJoint, nJoint)
+function out = fitR2PerEcho(aseLong, tausLong, echoLong, rmsJoint, nJoint, wLong)
 % Separate long-regime fits per echo (ln S = c_e - R2'_e*tau) and an F-test of the joint
 % model (shared R2', TE term) against the split model (4 parameters).
 %   F = (RSS_joint - RSS_split) / (RSS_split/(n-4)),  df = (1, n-4)
@@ -663,7 +686,8 @@ function out = fitR2PerEcho(aseLong, tausLong, echoLong, rmsJoint, nJoint)
     R2P = NaN([sz 2]);  rss = zeros(sz);  n = zeros(sz);
     for e = 1:2
         sel = echoLong(:) == e;
-        [B,r,ne] = fitMultiRegressor(aseLong(:,:,:,sel), [ones(nnz(sel),1), -tau(sel)], []);
+        if isempty(wLong), we = []; else, we = wLong(:,:,:,sel); end
+        [B,r,ne] = fitMultiRegressor(aseLong(:,:,:,sel), [ones(nnz(sel),1), -tau(sel)], [], [], we);
         R2P(:,:,:,e) = B(:,:,:,2);
         rss = rss + r.^2.*ne;  n = n + ne;
     end
@@ -693,4 +717,39 @@ function [meanSig, nValid] = regionMeans(data, M)
     end
     meanSig = reshape(sumSig ./ nValid, nReg,1,1,sz(4),sz(5));   % 0/0 -> NaN
     nValid  = reshape(nValid,           nReg,1,1,sz(4),sz(5));
+end
+
+function w = zshimWeights(Gz, taus, echo, dz)
+% F^2 fit weights per voxel and frame for the z-shim-corrected data (same F as the correction:
+% each frame uses its own echo's Gz and t = |tau|; voxels without a Gz estimate get 1).
+% Gz: X x Y x Z x nEchos (uT/m); taus in ms; dz per echo (m).  w: X x Y x Z x N (single)
+    sz = size(Gz,1:3);  N = numel(taus);
+    w = ones([sz N], 'single');
+    for f = 1:N
+        F = zshimAttenuation(Gz(:,:,:,echo(f)), taus(f)/1000, dz(echo(f)));
+        F(isnan(F)) = 1;
+        w(:,:,:,f) = F.^2;
+    end
+end
+
+function wR = regionWeights(data, w, M)
+% Weight of each region-mean frame for the ROI fit. The mean of corrected signals has log-space
+% variance proportional to sum(m^2/F^2)/sum(m)^2, against sum(m^2)/sum(m)^2 without attenuation,
+% so its relative weight is sum(m^2)/sum(m^2/w) over the voxels valid in that frame (w = F^2).
+% data, w: X x Y x Z x N x R  ->  wR: nReg x 1 x 1 x N x R
+    sz = size(data);  sz(end+1:5) = 1;
+    nReg = size(M,1);  nCol = sz(4)*sz(5);
+    D  = reshape(data, [], nCol);
+    Wv = reshape(w, [], nCol);
+    M2 = M.^2;
+    num = zeros(nReg,nCol);  den = zeros(nReg,nCol);
+    for c = 1:16:nCol
+        cols = c:min(c+15,nCol);
+        ok = isfinite(D(:,cols)) & D(:,cols) > 0;
+        iw = double(ok) ./ double(Wv(:,cols));
+        iw(~ok) = 0;
+        num(:,cols) = M2*double(ok);
+        den(:,cols) = M2*iw;
+    end
+    wR = reshape(num ./ den, nReg,1,1,sz(4),sz(5));    % 0/0 -> NaN (frame unused anyway)
 end

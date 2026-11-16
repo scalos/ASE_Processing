@@ -908,3 +908,47 @@ change.
     fingerprint and the restart watchdog's log. Safe to delete.
   - The launchd restart agent was **unloaded and removed** when the work finished (about 21:37),
     so no further automatic restarts will happen.
+
+## Decisions (review session, 2026-11-16)
+
+### Q1 — F² weighting of z-shim-corrected frames (decided: implement)
+
+**Change:**
+- With `dBCorr`, each corrected voxel-frame gets weight F² in every log-space fit. Dividing by
+  F scales the noise by 1/F, so F² is the matching inverse-variance weight.
+- Frames are set to NaN only below `zshim_Fcut` (0.1), where the sinc model itself is
+  unreliable. `zshim_Fmin` (0.5) now only defines "heavily attenuated" for bit 8.
+- `zshim_weightF2=false` restores the old behaviour (unweighted, NaN below Fmin).
+- **Where the weights apply:**
+  - `fitMultiRegressor` takes an optional weight array. Unit weights are bit-identical to OLS,
+    and weighted fits match `lscov`.
+  - The weights flow through `fitASERegimes`, `fitR2PerEcho` and `vcbvConsistency`. The SEs use
+    the weighted projection and the measured (attenuated) signal, σ/(F·S).
+- **ROI fit:** each region-mean frame gets weight Σm²/Σ(m²/F²) over the voxels valid in that
+  frame.
+- **New config keys:** `zshim_weightF2` (true) and `zshim_Fcut` (0.1). The config block now has
+  28 keys.
+
+**Tests:**
+- New `Tests/test_fitMultiRegressor.m`.
+- New Monte Carlo test with attenuated frames:
+  - The analytic SE is 0.01452, against an MC SD of 0.01451.
+  - The weighted fit has SD 0.0145, against 0.0181 unweighted.
+- All 17 tests pass.
+
+**Scratch subject** (brain = xvent tissue fraction > 0.9):
+- Default outputs are still bit-identical to the Phase 0 baseline.
+- **Voxels that lost their fit:** under legacy dBCorr this is 5.5% of brain. All of them get
+  R2′ and vCBV back with F² weighting.
+- **Recovered voxels against their neighbours:**
+  - R2′ is 21 vs 16 s⁻¹ and vCBV 0.32 vs 0.25.
+  - OEF is 0.22 vs 0.20.
+  - vCBV SE is about 2× larger.
+  - These voxels sit in susceptibility regions, and bit 8 still flags them.
+- **Voxels with no frame below F = 0.5** are essentially unchanged: median |ΔOEF| is 0.0004.
+- Brain medians are unchanged: R2′ 5.03 → 5.11, vCBV 0.101 → 0.101, OEF 0.221 → 0.222.
+- **ROI stats:**
+  - Median across regions, F² minus legacy: ΔOEF +0.001 [IQR −0.009, +0.013].
+  - Finite-OEF regions drop from 137 to 132. High-Gz voxels now re-enter the region means at
+    full membership, which is the Q2 question.
+  - L Caudate OEF is 0.370 at baseline, 0.686 with legacy dBCorr and 0.612 with F².

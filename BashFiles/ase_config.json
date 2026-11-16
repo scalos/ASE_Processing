@@ -66,6 +66,8 @@
       "zshim_GzRange": [-150, 150],
       "zshim_GzStep": 1,
       "zshim_Fmin": 0.5,
+      "zshim_weightF2": true,
+      "zshim_Fcut": 0.1,
       "noiseWeighting": false,
       "minVoxKept": 5,
       "useBounds": true,

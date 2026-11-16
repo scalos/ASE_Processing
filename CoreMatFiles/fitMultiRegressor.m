@@ -1,5 +1,5 @@
-function [B, rms, nValid] = fitMultiRegressor(ydata, Xdes, maskArray, chunkSize)
-% Voxelwise OLS of log(ydata) against the columns of Xdes, with per-voxel
+function [B, rms, nValid] = fitMultiRegressor(ydata, Xdes, maskArray, chunkSize, weights)
+% Voxelwise (optionally weighted) least squares of log(ydata) against the columns of Xdes, with per-voxel
 % exclusion of invalid frames (NaN, <=0, Inf).
 %
 % ydata     : Nx x Ny x Nz x Nd x Nr   (NaN / <=0 = excluded)
@@ -7,13 +7,18 @@ function [B, rms, nValid] = fitMultiRegressor(ydata, Xdes, maskArray, chunkSize)
 %             for an intercept). Row order: dTE fastest, then repetition.
 % maskArray : optional Nx x Ny x Nz logical; only these voxels are fitted
 % chunkSize : optional, voxels per chunk (default 1e5)
+% weights   : optional, same size as ydata: relative inverse log-space variance per
+%             voxel and frame (e.g. F^2 after z-shim correction). Empty = unweighted OLS.
+%             NaN weights count as 1.
 %
 % B      : Nx x Ny x Nz x p   coefficients (NaN where fit not possible)
-% rms    : Nx x Ny x Nz       sqrt(mean(resid.^2)) in log space (divides by n, not n-p)
+% rms    : Nx x Ny x Nz       sqrt(sum(w.*resid.^2)/n) in log space (divides by n, not n-p);
+%                             plain RMS when unweighted, so rms.^2.*n is the (weighted) RSS
 % nValid : Nx x Ny x Nz       number of frames used
 
     if nargin < 3, maskArray = []; end
     if nargin < 4 || isempty(chunkSize), chunkSize = 1e5; end
+    if nargin < 5, weights = []; end
 
     sz = size(ydata); sz(end+1:5) = 1;
     Nx = sz(1); Ny = sz(2); Nz = sz(3); Nd = sz(4); Nr = sz(5);
@@ -33,6 +38,12 @@ function [B, rms, nValid] = fitMultiRegressor(ydata, Xdes, maskArray, chunkSize)
     Xs = bsxfun(@rdivide, Xdes, colScale);
 
     Y2 = reshape(ydata, Nv, Nfr);
+    useW = ~isempty(weights);
+    if useW
+        assert(numel(weights) == numel(ydata), 'weights must have the same size as ydata.');
+        Wt2 = reshape(double(weights), Nv, Nfr);
+        Wt2(~isfinite(Wt2)) = 1;
+    end
     if isempty(maskArray)
         vox = (1:Nv)';
     else
@@ -52,6 +63,10 @@ function [B, rms, nValid] = fitMultiRegressor(ydata, Xdes, maskArray, chunkSize)
         L(W) = log(Y(W));
         Wd  = double(W);
         n   = sum(Wd, 2);
+        if useW
+            Wd = Wd .* Wt2(idx,:);        % weight 0 on invalid frames
+            L  = L .* Wd;                 % b = X'*W*log(y)
+        end
         nv  = numel(idx);
 
         % ---- normal equations A*beta = b (one system per voxel) ----
@@ -104,8 +119,14 @@ function [B, rms, nValid] = fitMultiRegressor(ydata, Xdes, maskArray, chunkSize)
         beta(bad,:) = NaN;
 
         % ---- residual RMS in log space ----
-        resid = (beta * Xs.' - L) .* Wd;
-        r = sqrt(sum(resid.^2, 2) ./ n);
+        if useW
+            Lr = zeros(size(Y));  Lr(W) = log(Y(W));
+            resid = (beta * Xs.' - Lr) .* double(W);
+            r = sqrt(sum(Wd .* resid.^2, 2) ./ n);
+        else
+            resid = (beta * Xs.' - L) .* Wd;
+            r = sqrt(sum(resid.^2, 2) ./ n);
+        end
         r(bad) = NaN;
 
         B2(idx,:) = bsxfun(@rdivide, beta, colScale);   % undo column scaling

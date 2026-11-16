@@ -10,6 +10,10 @@ function out = vcbvConsistency(aseLong, aseShort, XL, XS, TEsShort, fitRes, sigL
 %   sigLog.sigma      : X x Y x Z x nEchos noise SD (signal units, per single acquisition)
 %   sigLog.echoL/S    : NL/NS x 1 echo index of each frame
 %   sigLog.facL/S     : NL/NS x 1 noise factor per frame (1/sqrt(nAvg) for averaged frames)
+%   sigLog.wL/wS      : optional X x Y x Z x NL/NS fit weights (F^2 from the z-shim correction),
+%                       exactly as passed to fitMultiRegressor. With weights the projection is
+%                       P = (X'WX)^-1 X'W, and since the data were divided by F the measured
+%                       signal is F*S, so the log-space SD is sigma*fac/(sqrt(w)*S).
 %   opts.chunk        : voxels per chunk (default 2e4)
 %
 % Noise model: independent frames, log-space SD = sigma_echo*fac / S (S = measured signal).
@@ -48,6 +52,7 @@ function out = vcbvConsistency(aseLong, aseShort, XL, XS, TEsShort, fitRes, sigL
 
     YL = reshape(aseLong,  nVox, NL);
     YS = reshape(aseShort, nVox, NS);
+    wL = getW(sigLog, 'wL', nVox, NL);  wS = getW(sigLog, 'wS', nVox, NS);
     sig = reshape(sigLog.sigma, nVox, []);
     SE_int = NaN(nVox,1);  SE_q = NaN(nVox,1);  SE_d = NaN(nVox,1);
 
@@ -56,8 +61,8 @@ function out = vcbvConsistency(aseLong, aseShort, XL, XS, TEsShort, fitRes, sigL
     warning('off','MATLAB:singularMatrix');
     for s = 1:opts.chunk:numel(vox)
         idx = vox(s:min(s+opts.chunk-1, numel(vox)));  nv = numel(idx);
-        [PL, sL] = proj(YL(idx,:), XLs, cL, sig(idx,:), sigLog.echoL, sigLog.facL);   % pL x NL x nv
-        [PS, sS] = proj(YS(idx,:), XSs, cS, sig(idx,:), sigLog.echoS, sigLog.facS);   % 2 x NS x nv
+        [PL, sL] = proj(YL(idx,:), XLs, cL, sig(idx,:), sigLog.echoL, sigLog.facL, rowsOf(wL,idx));   % pL x NL x nv
+        [PS, sS] = proj(YS(idx,:), XSs, cS, sig(idx,:), sigLog.echoS, sigLog.facS, rowsOf(wS,idx));   % 2 x NS x nv
         PL1 = squeeze3(PL(1,:,:));  PLr = squeeze3(PL(iR2P,:,:));                    % nv x NL
         PS1 = squeeze3(PS(1,:,:));  PS2 = squeeze3(PS(2,:,:));                       % nv x NS
         if twoEcho
@@ -85,20 +90,42 @@ function out = vcbvConsistency(aseLong, aseShort, XL, XS, TEsShort, fitRes, sigL
     out.z = reshape(z, sz);
 end
 
-function [P, s2] = proj(Y, Xs, colScale, sig, echoIdx, fac)
-% Per-voxel OLS projection rows (unscaled coefficients) and log-space noise variances.
+function [P, s2] = proj(Y, Xs, colScale, sig, echoIdx, fac, w)
+% Per-voxel (weighted) LS projection rows (unscaled coefficients) and log-space noise variances.
     [nv, N] = size(Y);
     W  = isfinite(Y) & Y > 0;
-    Xw = Xs .* reshape(double(W).', N, 1, nv);             % N x p x nv
-    A  = pagemtimes(Xw, 'transpose', Xw, 'none');           % p x p x nv  (W is 0/1)
-    P  = pagemtimes(pageinv(A), 'none', Xw, 'transpose');   % p x N x nv (scaled coeffs)
+    if isempty(w)
+        Xw = Xs .* reshape(double(W).', N, 1, nv);         % N x p x nv
+        A  = pagemtimes(Xw, 'transpose', Xw, 'none');       % p x p x nv  (W is 0/1)
+        P  = pagemtimes(pageinv(A), 'none', Xw, 'transpose');   % p x N x nv (scaled coeffs)
+    else
+        w(~W) = 0;
+        Xm = Xs .* reshape(double(W).', N, 1, nv);
+        Xw = Xs .* reshape(w.', N, 1, nv);                  % W*X
+        A  = pagemtimes(Xm, 'transpose', Xw, 'none');       % X'WX
+        P  = pagemtimes(pageinv(A), 'none', Xw, 'transpose');   % (X'WX)^-1 X'W
+    end
     P  = P ./ colScale(:);                                  % undo column scaling
     S  = Y;  S(~W) = NaN;
     sd = sig(:, echoIdx(:).') .* fac(:).' ./ S;              % nv x N log-space SD
-    s2 = sd.^2;  s2(~W) = 0;
+    if ~isempty(w), sd = sd ./ sqrt(w); end                 % measured signal = F*S, w = F^2
+    s2 = sd.^2;  s2(~W | ~isfinite(s2)) = 0;
+end
+
+function w = getW(sigLog, name, nVox, N)
+    if isfield(sigLog, name) && ~isempty(sigLog.(name))
+        w = reshape(double(sigLog.(name)), nVox, N);
+        w(~isfinite(w)) = 1;
+    else
+        w = [];
+    end
 end
 
 function M = squeeze3(A)
 % 1 x N x nv -> nv x N
     M = reshape(A, size(A,2), size(A,3)).';
+end
+
+function r = rowsOf(w, idx)
+    if isempty(w), r = []; else, r = w(idx,:); end
 end

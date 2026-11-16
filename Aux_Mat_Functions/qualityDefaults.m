@@ -22,7 +22,10 @@ function q = qualityDefaults(q)
     % ---- z-shim gradient search / correction (correction itself: opts.dBCorr) ----
     d.zshim_GzRange    = [-150 150];  % uT/m
     d.zshim_GzStep     = 1;           % uT/m
-    d.zshim_Fmin       = 0.5;         % frames with attenuation F below this -> NaN (voxelwise)
+    d.zshim_Fmin       = 0.5;         % 'heavily attenuated' long frame (F < Fmin), counted for bit 8;
+                                      %   also the NaN cutoff when zshim_weightF2 is false (legacy)
+    d.zshim_weightF2   = true;        % dBCorr: weight each corrected voxel-frame by F^2 in the fits
+    d.zshim_Fcut       = 0.1;         % dBCorr with F^2 weights: frames with F below this -> NaN
     % ---- ROI integration ----
     d.noiseWeighting   = false;   % weight ROI membership by S^2/sigma^2 (off until compared)
     d.minVoxKept       = 5;       % effective voxels; fewer -> region values NaN
