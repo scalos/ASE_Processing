@@ -16,7 +16,9 @@
 | `anat_fs_tissueFrac_al.nii.gz` | 7b | optional SynthSeg tissue fraction |
 | `anat_fs_xvent_mask_al_ase.nii.gz` (or `…tissueFrac…_ase`) | 8 | tissue fraction on the ASE grid, used for the CSF criterion |
 
-## Fit run (`<subject>/session_ase/fits/<timestamp>/`, prefix `ase_fit_results`)
+## Fit run (`<subject>/session_ase/fits/<timestamp>[_<tag>]/`, prefix `ase_fit_results`)
+
+The run folder is `<timestamp>` or, with `aseFit.sh --tag <label>`, `<timestamp>_<label>`.
 
 **Always written:**
 - **`_manifest.json`:** the frame map (τ, TE, echo, source frame), which frames were used, t_crit, all fit options including the resolved `quality` block, and the path of every file below.
@@ -64,3 +66,18 @@ One row per region of the LUT. **The values come from fitting each region's aver
 | `<map>_raw` | unclipped ROI values (`writeRawMaps`) |
 | `nVox_kept`, `fracExcluded`, `fracExcl_b<k>_<name>` | with `quality.enabled`: kept voxels, total excluded fraction, and the fraction each criterion flags (overlapping) |
 | `OEF_med`, `R2P_med`, `vCBV_med`, `R2_med` | with `quality.enabled`: medians of the voxel maps over kept voxels |
+
+## Painted maps (`paintStats.sh`)
+
+- **`<outName>.nii.gz`** (default `template_painted_<stat>.nii.gz`, in the fit run folder; table mode: in `--outDir`): every voxel of a region holds that region's value; NaN outside painted regions and for regions without a value.
+- **`<outName with %STAT% → paint_report>.txt`:** regions placed and dropped (overlap, not in the template, omitted), table rows not in the LUT, placed regions with no table row, and per column the regions whose value is NaN.
+
+## Group statistics (`<outPath>/<timestamp>[_<fitTag>]/`, `aseGroupStats.sh`)
+
+| file | content |
+|---|---|
+| `group_ROI_Stats.csv` | one row per ROI (row names as in the subject tables, so it can be painted). Per stat: `_n` (subjects used), `_mean`, `_sd`, `_adjMean` (mean at the cohort's mean covariates), and per model term `_<term>_beta`, `_se`, `_t`, `_p`, `_q` (FDR across ROIs). Term names follow `fitlm`: `age`, `sex_2`, `group_mdt`. |
+| `group_ROI_long.csv` | every value that entered: subject × ROI × stat, `nVox`, covariates (raw) |
+| `group_subjects.csv` | every selected subject: included or not, reason, fit run used, covariates |
+| `group_report.txt` | inputs, filters, covariate coding and centring, subjects (run used or reason left out), subject folders with a matching fit but no table row, settings check, ROIs per stat and q < 0.05 counts, ROIs without a model |
+| `painted_<column>.nii.gz`, `painted_paint_report.txt` | with `--paint` |

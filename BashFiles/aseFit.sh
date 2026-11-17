@@ -27,6 +27,7 @@ matlabBin=matlab
 matdir=$repoDir
 B0=""                    # empty = read B0_T (actual field, from the imaging frequency) from each subject's header
 configFile=""
+fitTag=""                # optional run label: run folder becomes <timestamp>_<tag>
 fitOverrides=""          # accumulated "key":value items from --fit
 
 omitFailLog=0
@@ -64,6 +65,9 @@ Pipeline options (override the config; defaults in brackets):
   --qualityMaskNames <a,...>  Quality masks on the ASE grid (before the suffix); passed to MATLAB as
                               qualityMaskFiles when present (used by fit.quality) [$qualityMaskNames]
   --fitsSubdir <name>         [$fitsSubdir]
+  --tag <label>               Label for this run: the run folder becomes <fitsSubdir>/<timestamp>_<label>.
+                              Letters, digits, ".", "_" and "-" only. Select it later with
+                              aseGroupStats.sh / paintStats.sh --fitTag <label>.
   --outPref <str>             [$outPref]
   --matlabBin <path>          [$matlabBin]
   --matdir <path>             MATLAB code location [$matdir]
@@ -175,6 +179,7 @@ while [[ $# -gt 0 ]]; do
 		--segLUTs)        need_arg "$@"; segLUTs=$2;        shift 2 ;;
 		--qualityMaskNames) need_arg "$@"; qualityMaskNames=$2; shift 2 ;;
 		--fitsSubdir)     need_arg "$@"; fitsSubdir=$2;     shift 2 ;;
+		--tag)            need_arg "$@"; fitTag=$2;         shift 2 ;;
 		--outPref)        need_arg "$@"; outPref=$2;        shift 2 ;;
 		--matlabBin)      need_arg "$@"; matlabBin=$2;      shift 2 ;;
 		--matdir)         need_arg "$@"; matdir=$2;         shift 2 ;;
@@ -194,6 +199,11 @@ done
 if [[ ! $nEchos =~ ^[0-9]+$ ]] || ((nEchos < 1)); then
 	echo "Error: nEchos must be a positive integer (got: $nEchos)" >&2; exit 1
 fi
+if [[ -n $fitTag && ! $fitTag =~ ^[A-Za-z0-9._-]+$ ]]; then
+	echo "Error: --tag may contain only letters, digits, \".\", \"_\" and \"-\" (got: $fitTag)" >&2; exit 1
+fi
+runName=$runTimestamp
+[[ -n $fitTag ]] && runName="${runTimestamp}_${fitTag}"
 if [[ -n $B0 ]] && ! is_num "$B0"; then
 	echo "Error: B0 must be numeric (got: $B0)" >&2; exit 1
 fi
@@ -399,7 +409,7 @@ for x in "${subjlist[@]}"; do
 	fi
 
 	# ---- run folder and matlab call ----
-	runOutDir="$subjBase/$fitsSubdir/$runTimestamp"
+	runOutDir="$subjBase/$fitsSubdir/$runName"
 	mkdir -p "$runOutDir"
 	queuedDirs+=("$runOutDir"); queuedSubjs+=("$x"); queuedSubjBases+=("$subjBase")
 	outPrefFull="$runOutDir/$outPref"

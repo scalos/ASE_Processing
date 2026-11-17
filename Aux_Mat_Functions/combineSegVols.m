@@ -1,9 +1,14 @@
-function [segVol,LUT_found] = combineSegVols(segFiles,segLUTs,opts)
+function [segVol,LUT_found,report] = combineSegVols(segFiles,segLUTs,opts)
     %Combines segmented volumes using codes found in LUTs. 
     % Duplicate entries in LUT's must match completely otherwise mismatch 
     % errors will be triggered. 
     % Duplicate codes across segmented volumes will be allowed provided
     % that they cover exactly the same region in each volume
+    % report (optional 3rd output): table with one row per LUT entry: code, name, status
+    % ("placed", "omitted", "not in volumes", "volumes disagree", "overlap"), layer, detail.
+    % With keepOverlaps = false, regions are placed in LUT order and a region that overlaps an
+    % earlier one is dropped whole ("overlap"); set warnSkipped = false to collect these in the
+    % report instead of one warning per region.
     arguments
         segFiles
         segLUTs
@@ -13,6 +18,7 @@ function [segVol,LUT_found] = combineSegVols(segFiles,segLUTs,opts)
         opts.omitNames cell = {};
         opts.keepOverlaps = true; % stack overlapping regions along an extra (last) dimension
         opts.warnUnusedCodes = false; %warn if some codes in volumes are not found in LUT's
+        opts.warnSkipped = true; %one warning per skipped region (false: only in the report output)
     end
     v = opts.verbose;
 
@@ -105,6 +111,7 @@ function [segVol,LUT_found] = combineSegVols(segFiles,segLUTs,opts)
     end
     segVol = zeros(nVox, nLayers,'int32') + int32(opts.bkdCode);   % one column per layer
     LUT_found = cell(height(LUT),2);
+    repStatus = repmat("", height(LUT), 1);  repLayer = zeros(height(LUT),1);  repDetail = repmat("", height(LUT), 1);
 
     maxNameLen = max(strlength(string(LUT.name)));
     maxCodeLen = max(strlength(string(LUT.code)));
@@ -114,11 +121,13 @@ function [segVol,LUT_found] = combineSegVols(segFiles,segLUTs,opts)
         name = LUT{idx,2};
         if ismember(code,opts.omitCodes)
             if v; fprintf('Skipping code %d as requested\n',code);end
+            repStatus(idx) = "omitted";
             continue;
         end
         if ~isempty(opts.omitNames)
             if ismember(name,cell2mat(opts.omitNames))
                 if v; fprintf('Skipping name %s as requested\n',name);end
+                repStatus(idx) = "omitted";
                 continue;
             end
         end
@@ -141,9 +150,12 @@ function [segVol,LUT_found] = combineSegVols(segFiles,segLUTs,opts)
         matchingVolInds = [];
         if sum(foundSeg) == 0
             %code was not found in any volumes
+            repStatus(idx) = "not in volumes";
+            if opts.warnSkipped
             warning(['Issue with code %d (%s):\n' ...
                      '-  Could not find code in segmented volumes.\n' ...
                      '=> Skipping this region...'],code,name);
+            end
         elseif sum(foundSeg) == 1
             %code was found exactly once in all volumes
             matchingVolInds = segVols{foundSeg==1} == code;
@@ -157,10 +169,12 @@ function [segVol,LUT_found] = combineSegVols(segFiles,segLUTs,opts)
                 matchingVolInds = firstVolInds;
             else
                 %volumes do not agree with code
-                
+                repStatus(idx) = "volumes disagree";  repDetail(idx) = string(fileNames);
+                if opts.warnSkipped
                 warning(['Issue with code %d (%s) from files "%s":\n' ...
                          '-  Code appears in multiple segmented volumes and covers different regions.\n' ...
                          '=> Skipping this region...'],code,name,fileNames);
+                end
             end
         end
         if ~isempty(matchingVolInds)
@@ -174,6 +188,7 @@ function [segVol,LUT_found] = combineSegVols(segFiles,segLUTs,opts)
                     segVol(mask, L) = code;
                     LUT_found(idx,:) = {code,name};
                     placed = true;
+                    repStatus(idx) = "placed";  repLayer(idx) = L;
                     if v; fprintf('Wrote code %*d (%*s) to layer %*d from file(s) "%s"\n', ...
                             maxCodeLen,code,maxNameLen,name,maxLayerDigits,L,fileNames); end
                     break
@@ -198,15 +213,22 @@ function [segVol,LUT_found] = combineSegVols(segFiles,segLUTs,opts)
                 else
                     outcome = 'Overlaps are not being kept (opts.keepOverlaps = false).';
                 end
+                repStatus(idx) = "overlap";
+                repDetail(idx) = "overlaps " + strjoin(string(clashCodes(:)) + " " + clashNames(:), ", ");
+                if opts.warnSkipped
                 warning(['Issue with code %d (%s) from file(s) "%s":\n' ...
                          '-  Overlaps previously assigned voxels in all %d layer(s):\n' ...
                          '%s\n%s\n' ...
                          '-  %s\n' ...
                          '=> Skipping this region...'], ...
                          code, name, fileNames, nLayers, header, clashTbl, outcome);
+                end
             end
         end
     end
+
+    report = table(LUT.code, LUT.name, repStatus, repLayer, repDetail, ...
+        'VariableNames', {'code','name','status','layer','detail'});
 
     if all(cellfun(@(x) isempty(x),LUT_found))
         %if all failed, set to empty singular
