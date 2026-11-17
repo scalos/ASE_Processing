@@ -42,9 +42,11 @@ flowchart TD
     S7 --> F3
     S8 --> F2
 
-    FIT --> OUT["fits/{timestamp}/<br/>maps · ROI_Stats.csv · manifest.json · config_resolved.json"]
+    FIT --> OUT["fits/{timestamp}[_tag]/<br/>maps · ROI_Stats.csv · manifest.json · config_resolved.json"]
     OUT --> VIEW["aseView.sh → ASE_Viewer"]
-    OUT --> PAINT["paintStats.sh → ROI values painted on templates"]
+    OUT --> PAINT["paintStats.sh → one subject's ROI values painted on templates"]
+    OUT --> GROUP["aseGroupStats.sh → ASE_groupROIStats.m<br/>per-ROI model across subjects (cov_table_ase)"]
+    GROUP --> GPAINT["paintStats.sh --table → group results painted on templates"]
     OUT --> MANAGE["aseManageFits.sh → prune old fit runs"]
 ```
 
@@ -149,5 +151,6 @@ flowchart TD
 | noise, SEs, quality | `Aux_Mat_Functions/estimateRepNoise.m`, `CoreMatFiles/vcbvConsistency.m`, `computeVoxelQuality.m`, `Aux_Mat_Functions/qualityDefaults.m` |
 | ROI membership | `Aux_Mat_Functions/segToAseMembership.m`, `combineSegVols.m` |
 | viewing / painting / housekeeping | `BashFiles/aseView.sh` (`ASE_Viewer.m`), `paintStats.sh` (`ASE_paintROIStats.m`), `aseManageFits.sh` |
+| group statistics | `BashFiles/aseGroupStats.sh` → `CoreMatFiles/ASE_groupROIStats.m` (helpers: `Aux_Mat_Functions/readCovTable.m`, `applyCovFilters.m`, `findFitRun.m`, `bhFDR.m`) |
 | analysis scripts | `Scripts/regimeBoundarySim.m` (regime-split bias, with noise), `Scripts/anLin2003DesignFit.m` (An & Lin 2003 design), `Scripts/makeDocFigures.m` (figures for these docs) |
 | tests | `Tests/` (run `runtests('Tests')` with `CoreMatFiles` and `Aux_Mat_Functions` on the path) |

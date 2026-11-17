@@ -34,7 +34,7 @@ Every setting lives in `BashFiles/ase_config.json`. Precedence: script defaults 
 | `qualityMaskNames` | `anat_fs_xvent_mask_al.nii.gz` | tissue-fraction masks resampled to the ASE grid (linear); CSF = 1 − fraction |
 | `tissuePosteriorName` | `""` (off) | optional SynthSeg posteriors (e.g. `anat_fs_al_posteriors.nii.gz`) for an alternative tissue fraction |
 | `tissueFracName`, `posteriorNonTissueVols`, `posteriorNVols` | `anat_fs_tissueFrac_al.nii.gz`, `0,3,4,11,12,16,21,22`, 33 | SynthSeg tissue fraction = 1 − (background + CSF + ventricles). To use it, also set `qualityMaskNames` to `tissueFracName`. |
-| `fitsSubdir`, `outPref` | `fits`, `ase_fit_results` | output folder (`<subject>/<aseSubjDir>/<fitsSubdir>/<timestamp>/`) and file prefix |
+| `fitsSubdir`, `outPref` | `fits`, `ase_fit_results` | output folder (`<subject>/<aseSubjDir>/<fitsSubdir>/<timestamp>/`) and file prefix. `aseFit.sh --tag <label>` names the run folder `<timestamp>_<label>` so later steps can select it (`--fitTag`). |
 | `matlabBin`, `matdir` | `matlab`, repo | MATLAB location |
 | **`B0`** | null = header `B0_T` (changed) | field strength (T) for t_crit and the OEF scale. By default the **actual** field from each subject's header, `B0_T` = ImagingFrequency / 42.577478518 MHz/T, written by `asePreProcess.sh`. It used to be the nominal `MagneticFieldStrength` (3). Set a number (or `aseFit.sh --B0`) to override. Headers without `B0_T` are rejected: rerun `asePreProcess.sh --regenHdr`. |
 
@@ -98,3 +98,35 @@ Every setting lives in `BashFiles/ase_config.json`. Precedence: script defaults 
 | `useZshimEcho`, `zshimEcho_maxDiff` | true, 20 | bit 7: **placeholder; recalibrate** |
 | `useZshimFrac`, `zshimFrac_max` | true, 0.3 | bit 8 |
 | `useR2PEcho`, `r2pEcho_pMax` | **false**, 0.01 | bit 9: off, because it flags a systematic model effect rather than bad voxels |
+
+## Group statistics (`aseGroupStats.sh` → `ASE_groupROIStats.m`)
+
+Command-line flags only (no config section).
+
+| flag | default | meaning |
+|---|---|---|
+| `--covTable` | `<allSubjDir>/cov_table_ase` | **Defines the subjects.** Header line (may start with `#`), one row per subject, first column = subject ID. `#` rows are excluded; `NA` = missing. The data list is not used. |
+| `--select` (repeatable) | `group=ctrl,mdt` | row filters, all must hold: `col=a,b`, `col!=a`, `col>x`, `col>=x`, `col<x`, `col<=x`. `--selectAll` uses every row. |
+| `--covariates` | `age` | covariate columns (`""` = none). Numeric ones are centred on the cohort mean. |
+| `--categorical` | none | numeric columns to treat as categorical (e.g. `sex`); text columns always are (reference = first level in sorted order) |
+| `--stats` | `OEF,R2P,vCBV` | ROI-table columns to model |
+| `--minVox` | 0 | use a subject's ROI value only if its `nVox` ≥ this |
+| `--minN` | 5 | minimum subjects for a model (and ≥ coefficients + 2) |
+| `--fitTag` | none = latest run | each subject's latest run tagged `<label>`; no fallback to other runs |
+| `--settingsCheck` | `error` | `error` / `warn` / `off` when the chosen runs' `config_resolved.json` "fit" sections differ (output-only keys ignored) |
+| `--outPath` | `<allSubjDir>/group_stats` | results go to `<outPath>/<timestamp>[_<fitTag>]/` |
+| `--paint` + `--templateDir`, `--templateNames`, `--LUTs`, … | off | paint the result with `paintStats.sh --table`; columns default to every `<stat>_adjMean` and `<stat>_<term>_t` (`--paintStats` to choose) |
+
+Model per ROI and stat: `value ~ 1 + covariates` (`fitlm`). A subject's value is used when finite and above `minVox`; subjects with a missing covariate are left out. q = Benjamini–Hochberg FDR across ROIs, per stat and term.
+
+## Painting (`paintStats.sh` → `ASE_paintROIStats.m`)
+
+| flag | default | meaning |
+|---|---|---|
+| `--templateDir`, `--templateNames` | `/autofs/…/yen/templates`, required | template segmentation(s) |
+| `--LUTs` | `GM_WM_long.txt` | **painting LUT(s).** Regions are placed in LUT order; a region that overlaps an earlier one is dropped whole (no trimming) and listed in the report. List only the regions to paint. |
+| `--targetStats` | `OEF,R2P,vCBV` | table columns to paint |
+| `--fitTag`, `--allRuns` | latest run | per-subject mode: which run(s) to paint |
+| `--table`, `--outDir` | — | table mode: paint one table (e.g. `group_ROI_Stats.csv`) |
+| `--fillValue` | **NaN** (changed) | value outside painted regions and for regions without a value (was 0, which looked like a real value) |
+| `--omitCodes`, `--omitNames` | none | LUT entries not to paint |
