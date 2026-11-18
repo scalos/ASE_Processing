@@ -287,6 +287,19 @@ for t in $needTools; do
 	if ! command -v "$t" > /dev/null 2>&1; then echo "Error: $t not found on PATH" >&2; exit 1; fi
 done
 
+# AFNI build in use, and whether its 3dAllineate knows the registration cost (old builds,
+# e.g. 18.0.22, lack lpa+ and would otherwise fail on every subject)
+afniVer=$(3dvolreg -ver 2>&1 | head -n 1 | sed "s/^++ 3dvolreg: //")
+echo "AFNI: $(dirname "$(command -v 3dvolreg)") (${afniVer:-version unknown})"
+if ((nSeg > 0)) && [[ $allineateOpts =~ -cost[[:space:]]+([^[:space:]]+) ]]; then
+	allineateCost=${BASH_REMATCH[1]}
+	if ! 3dAllineate -HELP 2>/dev/null | grep -qF -- "$allineateCost"; then
+		echo "Error: this AFNI's 3dAllineate does not know the cost '$allineateCost' (from allineateOpts)." >&2
+		echo "       Put a newer AFNI first on PATH, e.g. /usr/pubsw/packages/AFNI/26.0.10 on the cluster." >&2
+		exit 1
+	fi
+fi
+
 # ---------------------------------------------------------------------------
 # planning: which stages run for a subject, and are their inputs available?
 # ---------------------------------------------------------------------------

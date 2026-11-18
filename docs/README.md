@@ -6,6 +6,7 @@
 | [settings.md](settings.md) | every config key with its default and meaning, and how to override it |
 | [outputs.md](outputs.md) | every file written by preprocessing, a fit run, painting and group statistics, including the ROI table columns |
 | [decisions.md](decisions.md) | method decisions (what changed, when, and why) and open questions |
+| [calibration-plan.md](calibration-plan.md) | the cohort calibration of the quality thresholds and correction defaults (in progress): method, phases, export, decisions needed |
 | [quality-mask-plan.md](quality-mask-plan.md) | the original work order (action plan) for the November 2026 quality-mask build |
 | [quality-mask-report.md](quality-mask-report.md) | detailed lab log of the November 2026 quality-mask work and review: all numbers, simulations and checks behind decisions.md |
 | `../AnLab_Comp/results/report.md` | comparison with the AnLab pipeline on the same subject |
