@@ -60,6 +60,7 @@ Pipeline options (override the config; defaults in brackets):
   --aseProcName <pattern>     Processed echo file name; must contain $echoTok when nEchos > 1 [$aseProcName]
   --hdrFileName <file>        [$hdrFileName]
   --segNames <a,b,...>        Segmentation names before the suffix is added; empty = no ROI stats [$segNames]
+                              Missing ones are left out with a warning; none found = subject skipped
   --segSuffix <str>           [$segSuffix]
   --segLUTs <a,b,...>         LUT file path(s) [$segLUTs]
   --qualityMaskNames <a,...>  Quality masks on the ASE grid (before the suffix); passed to MATLAB as
@@ -366,15 +367,24 @@ for x in "${subjlist[@]}"; do
 	# ---- segmentation (already in ase space) and LUTs ----
 	segArgs=""
 	if ((nSeg > 0)); then
+		# a missing segmentation is left out with a warning (its ROIs are absent from the table);
+		# the subject is skipped only when none of them is found
 		segPthList=()
+		segMissing=""
 		for segName in "${segList[@]}"; do
 			base=${segName%.gz}; base=${base%.nii}
 			segOut="${base}${segSuffix}.nii.gz"
-			if [[ ! -e "$subjBase/$segOut" ]]; then
-				okay=0; missingReasons+="  - transformed segmentation not found: $subjBase/$segOut $prepHint${nl}"
+			if [[ -e "$subjBase/$segOut" ]]; then
+				segPthList+=("$subjBase/$segOut")
+			else
+				segMissing+="  - transformed segmentation not found: $subjBase/$segOut $prepHint${nl}"
 			fi
-			segPthList+=("$subjBase/$segOut")
 		done
+		if ((${#segPthList[@]} == 0)); then
+			okay=0; missingReasons+="$segMissing"
+		elif [[ -n $segMissing ]]; then
+			warnMsg+="${segMissing//  - /  - warning: left out of the ROI table, }"
+		fi
 		for lut in "${lutList[@]}"; do
 			if [[ ! -e $lut ]]; then
 				okay=0; missingReasons+="  - LUT file not found: $lut${nl}"

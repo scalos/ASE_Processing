@@ -260,6 +260,15 @@ nXfer=${#xferList[@]}
 
 xfer_index() { local j; for ((j = 0; j < nXfer; j++)); do [[ ${xferList[j]} == "$1" ]] && { printf '%d' "$j"; return 0; }; done; return 1; }
 
+# xfer_required <name>: a later stage reads it (registration target, segmentation, quality mask).
+# Other transferNames entries are optional: a missing source is a warning, not a failure.
+xfer_required() {
+	local e
+	[[ $1 == "$regBaseName" ]] && return 0
+	for e in "${segArr[@]}" "${qmArr[@]}"; do [[ $e == "$1" ]] && return 0; done
+	return 1
+}
+
 # avail <name>: file exists in subjBase or is scheduled to be transferred
 avail() {
 	local j
@@ -282,7 +291,7 @@ done
 # planning: which stages run for a subject, and are their inputs available?
 # ---------------------------------------------------------------------------
 check_subject() {
-	local ei series nii side dte proc mc nraw j k name base idx
+	local ei series nii side dte proc mc nraw j k name base idx srcErr
 	missingReasons=""; ok=1
 	echoNums=(); doNiiE=(); doSideE=(); doCommE=(); doMotionE=(); xferDo=(); segDo=(); qmDo=()
 	anyNii=0; anySide=0; anyComm=0; anyMotion=0
@@ -358,10 +367,20 @@ check_subject() {
 			if ((regenTransfer == 1)) || [[ ! -e $subjBase/$name ]]; then
 				xferDo[j]=1
 				base=$(strip_nii "$name")
+				srcErr=""
 				if [[ ! -e $transferSrc/${base}+orig.HEAD ]]; then
-					ok=0; missingReasons+="  - source dataset for $name not found: $transferSrc/${base}+orig.HEAD${nl}"
+					srcErr="source dataset for $name not found: $transferSrc/${base}+orig.HEAD"
 				elif ! compgen -G "$transferSrc/${base}+orig.BRIK*" > /dev/null; then
-					ok=0; missingReasons+="  - source dataset for $name has .HEAD but no .BRIK: $transferSrc/${base}+orig${nl}"
+					srcErr="source dataset for $name has .HEAD but no .BRIK: $transferSrc/${base}+orig"
+				fi
+				if [[ -n $srcErr ]]; then
+					if xfer_required "$name"; then
+						ok=0; missingReasons+="  - $srcErr${nl}"
+					else
+						# transfer-only entry (nothing later uses it): skip it; rerun once the source exists
+						xferDo[j]=0
+						warnMsg+="  - warning: optional transfer skipped, $srcErr${nl}"
+					fi
 				fi
 			fi
 		done

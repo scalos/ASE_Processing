@@ -29,8 +29,8 @@ Every setting lives in `BashFiles/ase_config.json`. Precedence: script defaults 
 | `baseName`, `baseFrame` | `ase_base.nii.gz`, 0 | motion and registration reference (echo-1 frame 0, the spin echo) |
 | `baseAlName`, `regBaseName`, `allineateOpts` | …, `anat_fs_brain_al.nii.gz`, `-cost lpa+ …` | ASE → anatomy registration |
 | `tformName`, `tformApplyName` | `ase_base_al_mat.aff12.1D`, `…_inv_mat…` | forward and inverse transforms |
-| `transferSrcDir`, `transferNames` | `session_afni_nortc`, brain, mask, xvent, bstem | anatomy copied from AFNI `+orig` to NIfTI |
-| `segNames`, `segSuffix`, `segLUTs` | aparc+aseg, wmparc; `_ase`; `GM_WM_long.txt` | segmentations moved to ASE space (NN) for the ROI table; empty `segNames` means no ROI stats |
+| `transferSrcDir`, `transferNames` | `session_afni_nortc`, brain, mask, xvent, bstem | anatomy copied from AFNI `+orig` to NIfTI. Entries that a later stage reads (`regBaseName`, `segNames`, `qualityMaskNames`) are required. Other entries, e.g. bstem, are optional: a missing source is a warning, and the file is transferred on a later run once the source exists. |
+| `segNames`, `segSuffix`, `segLUTs` | aparc+aseg, wmparc; `_ase`; `GM_WM_long.txt` | segmentations moved to ASE space (NN) for the ROI table; empty `segNames` means no ROI stats. In `aseFit.sh`, a missing `<seg>_ase` file is left out with a warning (its ROIs are absent from the table); the subject is skipped only when none is found. |
 | `qualityMaskNames` | `anat_fs_xvent_mask_al.nii.gz` | tissue-fraction masks resampled to the ASE grid (linear); CSF = 1 − fraction |
 | `tissuePosteriorName` | `""` (off) | optional SynthSeg posteriors (e.g. `anat_fs_al_posteriors.nii.gz`) for an alternative tissue fraction |
 | `tissueFracName`, `posteriorNonTissueVols`, `posteriorNVols` | `anat_fs_tissueFrac_al.nii.gz`, `0,3,4,11,12,16,21,22`, 33 | SynthSeg tissue fraction = 1 − (background + CSF + ventricles). To use it, also set `qualityMaskNames` to `tissueFracName`. |
