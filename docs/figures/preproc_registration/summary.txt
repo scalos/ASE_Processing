@@ -1,0 +1,41 @@
+=============== MAIN TAKEAWAYS ===============
+
+OVERALL: The new preprocessing places the ASE data on the anatomy within 0.2 mm of the old (max over the brain); where they differ (echo-2 motion), the new pipeline removes an error in the old.
+
+Fig 1 (reg1_conversion): Dimon (old) and dcm2niix (new) write identical pixels: max |difference| = 0 over all frames (echo 2: 0). Only the header position differs, by [-2.8 0.1 5.7] mm (R, A, S).
+Fig 2 (reg2_displacement): Each pipeline's registration cancels its own header offset. For every brain voxel, old and new point to raw ASE positions 0.07 mm apart (median; 95th 0.14, max 0.21 mm) against a 1.72 x 1.72 x 4.8 mm ASE voxel.
+Fig 3 (reg3_overlay): The old- and new-registered ASE images are indistinguishable on the anatomy (r = 0.9998 within the brain); white-matter and ventricle contours fall in the same place.
+Fig 4 (reg4_roi_dice): ROI masks differ between pipelines less than they would if the segmentation were nudged by 1 mm, in 95% of regions (median Dice old vs new 0.88; 1 mm shift 0.81). Small regions score lower because they are mostly boundary. The remaining difference is likely the 1 mm nearest-neighbour rounding in the ROI method, not registration (not yet tested separately).
+Fig 5 (reg5_motion): Echo-1 motion parameters are the same in both pipelines (RMS difference <= 0.002 deg / mm). The old pipeline registered echo 2 on its own against the echo-1 base, which put it off the echo-1 motion by up to 0.47 deg pitch and 0.47 mm dS (RMS); the new pipeline applies the echo-1 transforms to echo 2, since both echoes come from the same excitation. Motion-corrected images, old vs new: median RMS difference 0.01% (echo 1), 4.55% (echo 2) of the signal.
+
+CAVEAT (both pipelines, see docs/motion-correction-plan.md): the echo-1 motion estimates follow the dTE order (dTE explains 83% of dP) and the z-shim block shows up to 2.5 deg of apparent pitch, i.e. 3dvolreg partly reads ASE contrast as motion. This does not separate old from new.
+NOTE: ROI membership uses the fixed segToAseMembership (2026-11-20); before the fix, ROI masks were shifted about one slice and matched AFNI resampling in only 38% of labelled voxels.
+
+=============== DETAILS (run log) ===============
+== 1. Conversion (Dimon vs dcm2niix) ==
+echo 1 (022): index map old->new = [1 0 0;0 -1 0;0 0 1], max |old - new| over all 98 frames = 0
+header position of the same pixel, new - old (RAS mm): [-2.82 0.09 5.69]
+echo 2 (024): max |old - new| = 0
+old ase_base = old raw frame 0 (same header): 1;  new ase_base = new raw frame 0: 1
+== 2. ASE -> anatomy: old vs new transforms ==
+anatomy identical in both folders: 1
+matrix difference, linear part max |d| = 0.0021; translation d = [2.83 -0.20 5.66] mm
+displacement over 1295002 brain voxels (100.0% of the brain inside both ASE fields of view): median 0.07 mm, 95th 0.14 mm, max 0.21 mm
+mean signed shift along ASE axes i, j, k: [0.00 -0.03 -0.01] mm; ASE voxel 1.72 x 1.72 x 4.80 mm
+== 3. Overlay on the anatomy ==
+aparc+aseg identical in both folders: 1
+correlation of old- vs new-registered ASE base within the brain: 0.9998
+old stored ase_base_al could not be read (truncated transfer?); check skipped
+new stored ase_base_al vs this matrix re-applied: r = 0.9989 (100.0% of brain nonzero in stored file)
+== 4. ROI membership on the ASE grid ==
+anat_fs_aparc_aseg_al.nii.gz: 109 regions, weighted Dice old vs new: median 0.881 (min 0.616); 1 mm shift reference: median 0.806
+anat_fs_wmparc_al.nii.gz: 176 regions, weighted Dice old vs new: median 0.886 (min 0.616); 1 mm shift reference: median 0.816
+== 5. Motion correction ==
+old split: r1 = 49 frames, r2 = 49; z-shim frames (0-based) in r1: [90 92 94 96], in r2: [91 93 95 97]
+old ase_022_r1 = raw frames r1 (sorted split reproduced): 1
+re-run echo-1 motion parameters vs stored ase_e1_mc.1D: max |d| = 0.0000
+old e1_r1 vs new echo-1 params at the same frames, RMS diff [roll (°) 0.000, pitch (°) 0.000, yaw (°) 0.000, dS (mm) 0.000, dL (mm) 0.000, dP (mm) 0.000]
+old e1_r2 vs new echo-1 params at the same frames, RMS diff [roll (°) 0.002, pitch (°) 0.002, yaw (°) 0.001, dS (mm) 0.001, dL (mm) 0.001, dP (mm) 0.001]
+old e2_r1 vs new echo-1 params at the same frames, RMS diff [roll (°) 0.089, pitch (°) 0.453, yaw (°) 0.089, dS (mm) 0.446, dL (mm) 0.038, dP (mm) 0.383]
+old e2_r2 vs new echo-1 params at the same frames, RMS diff [roll (°) 0.079, pitch (°) 0.470, yaw (°) 0.106, dS (mm) 0.467, dL (mm) 0.036, dP (mm) 0.395]
+old vs new motion-corrected images, normalized RMS difference in brain: echo 1 median 0.0001 (max 0.0009), echo 2 median 0.0455 (max 0.3265)

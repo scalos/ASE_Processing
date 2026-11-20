@@ -10,7 +10,6 @@
     "dcmIndexFile": "dcm.index.dat",
     "scannerCode": 3,
     "commentScript": "Siemens_ase_XA30.sh",
-    "dcm2niixMinFiles": 500,
     "rawNii": "ase_%SERIES%.nii",
     "pattern_dicomHdr": "dcm_hdr_%SERIES%.json",
     "pattern_dteHdr": "dcm_hdr_%SERIES%_dtes.txt",

@@ -12,7 +12,7 @@
 #
 # Everything comes from o2co2_ase; nothing is copied. Real (not linked) directories: <dst>,
 # <dst>/<subj>, raw_data, raw_data/dcm, session_afni_nortc, session_ase. The pipeline writes into
-# session_ase and, when Dimon converts a series, into raw_data/dcm (GERT_Reco_*, dimon.files.run.*),
+# session_ase (and, in older versions that used Dimon, into raw_data/dcm: GERT_Reco_*, dimon.files.run.*),
 # so those must not point back into o2co2_ase. session_afni_nortc is a real folder of per-file
 # links so nothing can be created in the original.
 #

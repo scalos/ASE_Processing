@@ -19,7 +19,6 @@ Every setting lives in `BashFiles/ase_config.json`. Precedence: script defaults 
 | `aseSubjDir` | `session_ase` | per-subject working folder |
 | `rawDataDir`, `dcmIndexFile` | `raw_data/dcm`, `dcm.index.dat` | DICOM location and index |
 | `scannerCode`, `commentScript` | 3, `Siemens_ase_XA30.sh` | decodes dTE / z-moment from the DICOM image comments |
-| `dcm2niixMinFiles` | 500 | minimum DICOM count for a series to convert |
 | `rawNii`, `pattern_dicomHdr`, `pattern_dteHdr` | `ase_%SERIES%.nii`, … | names of the converted series and their headers |
 | `hdrFileName` | `ase_hdr.json` | combined header (TEs, dTEs, z-moments, `SliceThickness_mm`) |
 | `aseProcName`, `motionParamName` | `ase_e%ECHO%_proc.nii.gz`, `ase_e%ECHO%_mc.1D` | motion-corrected data and motion parameters |

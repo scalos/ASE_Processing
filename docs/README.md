@@ -8,6 +8,7 @@
 | [decisions.md](decisions.md) | method decisions (what changed, when, and why) and open questions |
 | [calibration-plan.md](calibration-plan.md) | the cohort calibration of the quality thresholds and correction defaults (in progress): method, phases, export, decisions needed |
 | [quality-mask-plan.md](quality-mask-plan.md) | the original work order (action plan) for the November 2026 quality-mask build |
+| [motion-correction-plan.md](motion-correction-plan.md) | open problem: echo-1 motion estimates follow the τ-dependent ASE contrast; options and how to evaluate them (not started) |
 | [quality-mask-report.md](quality-mask-report.md) | detailed lab log of the November 2026 quality-mask work and review: all numbers, simulations and checks behind decisions.md |
 | `../AnLab_Comp/results/report.md` | comparison with the AnLab pipeline on the same subject |
 
