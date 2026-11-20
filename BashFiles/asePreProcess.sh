@@ -33,8 +33,6 @@ rawDataDir=raw_data/dcm
 dcmIndexFile=dcm.index.dat          # subject-relative (sits next to session_ase)
 scannerCode=3
 commentScript=Siemens_ase_XA30.sh
-dcm2niixMinFiles=500
-dimonOpts=""
 rawNii="ase_%SERIES%.nii"
 pattern_dicomHdr="dcm_hdr_%SERIES%.json"
 pattern_dteHdr="dcm_hdr_%SERIES%_dtes.txt"
@@ -66,7 +64,7 @@ posteriorNonTissueVols="0,3,4,11,12,16,21,22"      # 0-based sub-bricks: backgro
                                                    #   3rd, 4th vent, CSF (label 24), R lat/inf-lat vent
 posteriorNVols=33                                  # expected sub-bricks (SynthSeg standard label set)
 
-pipelineKeys="allSubjDir dataList echo1Col echoSpacing nEchos aseSubjDir rawDataDir dcmIndexFile scannerCode commentScript dcm2niixMinFiles dimonOpts rawNii pattern_dicomHdr pattern_dteHdr aseProcName motionParamName hdrFileName volregOpts motionMode motionMatName motionApplyInterp baseName baseFrame baseAlName regBaseName allineateOpts tformName tformApplyName transferSrcDir transferNames segNames segSuffix qualityMaskNames tissuePosteriorName tissueFracName posteriorNonTissueVols posteriorNVols"
+pipelineKeys="allSubjDir dataList echo1Col echoSpacing nEchos aseSubjDir rawDataDir dcmIndexFile scannerCode commentScript rawNii pattern_dicomHdr pattern_dteHdr aseProcName motionParamName hdrFileName volregOpts motionMode motionMatName motionApplyInterp baseName baseFrame baseAlName regBaseName allineateOpts tformName tformApplyName transferSrcDir transferNames segNames segSuffix qualityMaskNames tissuePosteriorName tissueFracName posteriorNonTissueVols posteriorNVols"
 
 # regeneration / logging / retry
 regenNifti=0; regenComments=0; regenHdr=0; regenMotion=0
@@ -112,10 +110,16 @@ need_arg() {
 	if [[ $# -lt 2 ]]; then echo "Error: $1 requires an argument" >&2; exit 1; fi
 }
 
+# keys that no longer do anything (2026-11-20: Dimon removed, dcm2niix converts every series)
+removedKeys="dcm2niixMinFiles dimonOpts"
+
 set_key() {
 	local kv=$1 k v
 	if [[ $kv != *=* ]]; then echo "Error: --set expects key=value (got: $kv)" >&2; exit 1; fi
 	k=${kv%%=*}; v=${kv#*=}
+	case " $removedKeys " in
+		*" $k "*) echo "Warning: pipeline key $k was removed (dcm2niix now converts every series); ignored" >&2; return 0 ;;
+	esac
 	case " $pipelineKeys " in
 		*" $k "*) ;;
 		*) echo "Error: unknown pipeline key: $k" >&2; exit 1 ;;
@@ -154,6 +158,11 @@ if [[ -n $configFile ]]; then
 	fi
 	for key in $pipelineKeys; do
 		if val=$(cfg_get "$pipeSec" "$key"); then printf -v "$key" '%s' "$val"; fi
+	done
+	for key in $removedKeys; do
+		if cfg_get "$pipeSec" "$key" > /dev/null; then
+			echo "Warning: config key $key was removed (dcm2niix now converts every series); ignored" >&2
+		fi
 	done
 	echo "Using config: $configFile"
 fi
@@ -195,7 +204,7 @@ fi
 
 # ---- validate settings ----
 is_int() { [[ $1 =~ ^[0-9]+$ ]]; }
-for k in nEchos echo1Col echoSpacing scannerCode dcm2niixMinFiles baseFrame; do
+for k in nEchos echo1Col echoSpacing scannerCode baseFrame; do
 	if ! is_int "${!k}"; then echo "Error: $k must be a non-negative integer (got: ${!k})" >&2; exit 1; fi
 done
 if ((nEchos < 1)); then echo "Error: nEchos must be >= 1" >&2; exit 1; fi
@@ -280,7 +289,7 @@ avail() {
 }
 
 # tools
-needTools="dcm2niix 3dinfo 3drefit 3dvolreg 3dcalc"
+needTools="dcm2niix dcm2niix_afni 3dinfo 3drefit 3dvolreg 3dcalc"
 [[ $motionMode == echo1 ]] && ((nEchos > 1)) && needTools+=" 3dAllineate"
 ((nSeg > 0)) && needTools+=" 3dAllineate cat_matvec 3dAFNItoNIFTI"
 for t in $needTools; do
@@ -463,7 +472,7 @@ take_single_output() {
 }
 
 stage_nifti() {
-	local ei series nii side niiBase sideBase nraw nframes zopt tmpOut
+	local ei series nii side niiBase sideBase zopt tmpOut
 	for ((ei = 0; ei < nEchos; ei++)); do
 		series=${echoNums[ei]}
 		nii=$(subst_series "$rawNii" "$series")
@@ -472,39 +481,20 @@ stage_nifti() {
 		if ((doNiiE[ei] == 1)); then
 			echo "[$subjID] Converting series $series -> $nii"
 			niiBase=$(strip_nii "$nii")
-			nraw=$(ls -1 "$rawBase/$series"/MR.* 2>/dev/null | wc -l | tr -d ' ')
 			rm -f "$subjBase/$nii" "$rawBase/$nii"
-			# enhanced (multi-frame) dicoms hold many slices per file; Dimon can't assemble them
-			nframes=1
-			if command -v dicom_hinfo > /dev/null 2>&1; then
-				nframes=$(dicom_hinfo -no_name -tag 0028,0008 "$(ls -1 "$rawBase/$series"/MR.* 2>/dev/null | head -n 1)" 2>/dev/null | tr -d ' ')
-				is_int "$nframes" || nframes=1
+			# dcm2niix for every series: it handles classic, mosaic and enhanced (multi-frame)
+			# DICOMs and is needed anyway for the json sidecar. (The old cluster script used Dimon
+			# for small series; on XA30 data both give identical pixels and only the header origin
+			# differs: docs/figures/preproc_registration/reg1_conversion.png.)
+			zopt=""; [[ $nii == *.gz ]] && zopt="-z y"
+			# dcm2niix may append suffixes (e.g. _e2 for multi-echo); write to a temp dir and rename
+			tmpOut=$(mktemp -d "$subjBase/.dcm2niix.XXXXXX")
+			if ! dcm2niix_afni -b n $zopt -f "$niiBase" -o "$tmpOut" "$rawBase/$series"; then
+				rm -rf "$tmpOut"
+				procErr+="  - dcm2niix_afni failed for $rawBase/$series${nl}"; return 1
 			fi
-			if ((nraw > dcm2niixMinFiles || nframes > 1)); then
-				if ! command -v dcm2niix_afni > /dev/null 2>&1; then
-					procErr+="  - dcm2niix_afni not found (needed for $nraw dicoms, $nframes frames/file)${nl}"; return 1
-				fi
-				zopt=""; [[ $nii == *.gz ]] && zopt="-z y"
-				# dcm2niix may append suffixes (e.g. _e2 for multi-echo); write to a temp dir and rename
-				tmpOut=$(mktemp -d "$subjBase/.dcm2niix.XXXXXX")
-				if ! dcm2niix_afni -b n $zopt -f "$niiBase" -o "$tmpOut" "$rawBase/$series"; then
-					rm -rf "$tmpOut"
-					procErr+="  - dcm2niix_afni failed for $rawBase/$series${nl}"; return 1
-				fi
-				if ! take_single_output "$tmpOut" "*.nii*" "$subjBase/$nii"; then
-					procErr+="  - dcm2niix_afni for $rawBase/$series: $takeErr${nl}"; return 1
-				fi
-			else
-				if ! command -v Dimon > /dev/null 2>&1; then
-					procErr+="  - Dimon not found (needed for $nraw dicoms)${nl}"; return 1
-				fi
-				if ! ( cd "$rawBase" && Dimon -infile_pattern "./$series/MR.*" -gert_create_dataset $dimonOpts -gert_to3d_prefix "$nii" ); then
-					rm -f "$rawBase/$nii"
-					procErr+="  - Dimon failed for $rawBase/$series${nl}"; return 1
-				fi
-				if [[ ! -e $rawBase/$nii ]] || ! mv "$rawBase/$nii" "$subjBase/$nii"; then
-					procErr+="  - Dimon did not produce $rawBase/$nii${nl}"; return 1
-				fi
+			if ! take_single_output "$tmpOut" "*.nii*" "$subjBase/$nii"; then
+				procErr+="  - dcm2niix_afni for $rawBase/$series: $takeErr${nl}"; return 1
 			fi
 			if [[ ! -e $subjBase/$nii ]]; then
 				procErr+="  - expected nifti not found after conversion: $subjBase/$nii${nl}"; return 1

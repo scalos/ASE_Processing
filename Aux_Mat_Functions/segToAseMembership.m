@@ -20,8 +20,10 @@ function M = segToAseMembership(segVol, LUT, segInfo, aseInfo, opts)
     aseSz = aseInfo.ImageSize(1:3);
     nReg = height(LUT);  nVox = prod(aseSz);
     
-    %MODIFY Tc here to include tForm
-    % ASE index -> seg index (row-vector convention: idx = [i j k 1]*T)
+    % ASE index -> seg index (row-vector convention: idx = [i j k 1]*T). Transform.T is the
+    % NIfTI affine, which maps 0-BASED voxel indices to world, so array indices are shifted by
+    % -1 before Tc and +1 after rounding (else every sample lands one ASE voxel minus one seg
+    % voxel off along each axis).
     Tc = aseInfo.Transform.T/segInfo.Transform.T;
 
     % number of sub-samples per axis from the voxel-size ratio (capped)
@@ -42,8 +44,8 @@ function M = segToAseMembership(segVol, LUT, segInfo, aseInfo, opts)
     for a = oi
       for b = oj
         for c = ok
-            P = [I+a, J+b, K+c, ones(nVox,1)] * Tc;           % seg-grid coordinates
-            p = round(P(:,1:3));
+            P = [I-1+a, J-1+b, K-1+c, ones(nVox,1)] * Tc;     % 0-based seg-grid coordinates
+            p = round(P(:,1:3)) + 1;                           % 1-based array indices
             inb = all(p >= 1 & p <= segSz, 2);
             lin = sub2ind(segSz, p(inb,1), p(inb,2), p(inb,3));
             vox = voxIdx(inb);
