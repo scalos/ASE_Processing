@@ -17,7 +17,7 @@ Every setting lives in `BashFiles/ase_config.json`. Precedence: script defaults 
 | `dataList` | `datalist_ase` | subject list: column 1 is the subject ID, column `echo1Col` the echo-1 series |
 | `echo1Col`, `echoSpacing`, `nEchos` | 28, 2, 2 | echo-k series = echo-1 series + (k−1)·echoSpacing |
 | `aseSubjDir` | `session_ase` | per-subject working folder |
-| `rawDataDir`, `dcmIndexFile` | `raw_data/dcm`, `dcm.index.dat` | DICOM location and index |
+| `rawDataDir`, `dcmIndexFile` | `raw_data/dcm`, `dcm.index.dat` | DICOM location (one folder per series). The index is passed to the comment script but no longer used: it reads every DICOM in the series folder and stops if the folder mixes series (2026-11-24). |
 | `scannerCode`, `commentScript` | 3, `Siemens_ase_XA30.sh` | decodes dTE / z-moment from the DICOM image comments |
 | `rawNii`, `pattern_dicomHdr`, `pattern_dteHdr` | `ase_%SERIES%.nii`, … | names of the converted series and their headers |
 | `hdrFileName` | `ase_hdr.json` | combined header (TEs, dTEs, z-moments, `SliceThickness_mm`) |
@@ -26,18 +26,24 @@ Every setting lives in `BashFiles/ase_config.json`. Precedence: script defaults 
 | **`motionMode`** | **`echo1`** (changed) | `echo1`: 3dvolreg on echo 1, same transforms applied to all echoes. `perEcho`: register each echo separately (old behaviour). |
 | `motionMatName`, `motionApplyInterp` | `ase_e1_mc_mat.aff12.1D`, `wsinc5` | saved echo-1 transforms; interpolation used when applying them to echo 2 |
 | `baseName`, `baseFrame` | `ase_base.nii.gz`, 0 | motion and registration reference (echo-1 frame 0, the spin echo) |
-| `baseAlName`, `regBaseName`, `allineateOpts` | …, `anat_fs_brain_al.nii.gz`, `-cost lpa+ …` | ASE → anatomy registration |
-| `tformName`, `tformApplyName` | `ase_base_al_mat.aff12.1D`, `…_inv_mat…` | forward and inverse transforms |
-| `transferSrcDir`, `transferNames` | `session_afni_nortc`, brain, mask, xvent, bstem | anatomy copied from AFNI `+orig` to NIfTI. Entries that a later stage reads (`regBaseName`, `segNames`, `qualityMaskNames`) are required. Other entries, e.g. bstem, are optional: a missing source is a warning, and the file is transferred on a later run once the source exists. |
-| `segNames`, `segSuffix`, `segLUTs` | aparc+aseg, wmparc; `_ase`; `GM_WM_long.txt` | segmentations moved to ASE space (NN) for the ROI table; empty `segNames` means no ROI stats. In `aseFit.sh`, a missing `<seg>_ase` file is left out with a warning (its ROIs are absent from the table); the subject is skipped only when none is found. |
-| `qualityMaskNames` | `anat_fs_xvent_mask_al.nii.gz` | tissue-fraction masks resampled to the ASE grid (linear); CSF = 1 − fraction |
-| `tissuePosteriorName` | `""` (off) | optional SynthSeg posteriors (e.g. `anat_fs_al_posteriors.nii.gz`) for an alternative tissue fraction |
-| `tissueFracName`, `posteriorNonTissueVols`, `posteriorNVols` | `anat_fs_tissueFrac_al.nii.gz`, `0,3,4,11,12,16,21,22`, 33 | SynthSeg tissue fraction = 1 − (background + CSF + ventricles). To use it, also set `qualityMaskNames` to `tissueFracName`. |
+| **`anatSource`** | **`fsrecon`** (changed) | where the anatomy comes from. `fsrecon`: the FreeSurfer recon, converted with `mri_convert` (needs FreeSurfer on PATH). `afni`: the legacy BOLD-aligned `_al` copies in `transferSrcDir` (`session_afni_nortc`), kept to reproduce old results. Also read by `aseFit.sh` (`--anatSource`) to resolve `auto` names. See [anat-route-report.md](anat-route-report.md). |
+| `fsSubjDir` | `fsrecon` | FreeSurfer subject folder (`fsrecon`): subject-relative, or absolute with `%SUBJ%` for the subject ID, e.g. `/autofs/…/fsrecon/%SUBJ%`. `Scripts/linkO2co2Ase.sh` links `<subj>/fsrecon`. |
+| `fsVolumes` | T1, aseg, aparc+aseg, wmparc, brainstemSsLabels.v13.FSvoxelSpace | `<file in fsSubjDir/mri>=<name>` pairs, converted into `aseSubjDir` (`fsrecon`). `T1.mgz` and `aseg.mgz` are required (registration target); `aparc+aseg.mgz` is required when the xvent mask is used. A missing segmentation (e.g. no brainstem module) is left out with a warning. |
+| `xventName`, `xventExcludeLabels` | `anat_fs_xvent_mask.nii.gz`, `4,5,14,15,43,44` | tissue mask built from aparc+aseg (`fsrecon`): labelled voxels minus these labels (lateral, inferior-lateral, 3rd, 4th ventricles: the old xvent rule) |
+| `regBaseName` | `auto` | registration target. `auto`: `anat_fs_brain.nii.gz` (`fsrecon`: T1 × step(aseg), 3dUnifize, built in stage 5) or `anat_fs_brain_al.nii.gz` (`afni`) |
+| **`registerDof`** | **12** | parameters of the ASE → anatomy registration: 12 (affine), 9 (shift, rotation, scale) or 6 (rigid). 12 matches the old route; a rigid fit misses the ~3–4% anterior–posterior compression of the EPI (report §3). Changing it re-registers on the next run. |
+| `baseAlName`, `allineateOpts` | `ase_base_al.nii.gz`, `-twopass -cost lpa+ -autoweight -fineblur 1 -cmass` | registered ASE base on the anatomy grid; 3dAllineate options (no `-warp`: set `registerDof`) |
+| `tformName`, `tformApplyName` | `ase_base_al_mat.aff12.1D`, `…_inv_mat…` | forward and inverse transforms. Their settings are recorded in `<tformName without .aff12.1D>_settings.txt`; if `anatSource`, the target, `registerDof` or `allineateOpts` change, the next run re-registers and redoes stages 7–8. |
+| `segNames`, `segSuffix`, `segLUTs` | `auto`; `_ase`; `GM_WM_long.txt` | segmentations moved to ASE space (NN) for the ROI table; empty `segNames` means no ROI stats. `auto`: `anat_fs_aparc_aseg`, `anat_fs_wmparc`, `anat_fs_bstem` (`fsrecon`); `anat_fs_aparc_aseg_al`, `anat_fs_wmparc_al` (`afni`; `aseFit.sh` also looks for `anat_fs_bstem_al`). In `aseFit.sh`, a missing `<seg>_ase` file is left out with a warning (its ROIs are absent from the table); the subject is skipped only when none is found. |
+| `qualityMaskNames` | `auto` | tissue-fraction masks resampled to the ASE grid (linear); CSF = 1 − fraction. `auto`: `xventName` (`fsrecon`) or `anat_fs_xvent_mask_al.nii.gz` (`afni`) |
+| `transferSrcDir`, `transferNames` | `session_afni_nortc`, brain, mask, xvent, bstem | **`afni` only.** Anatomy copied from AFNI `+orig` to NIfTI. Entries that a later stage reads are required; others (e.g. bstem) are optional: a missing source is a warning. |
+| `tissuePosteriorName` | `""` (off) | **`afni` only.** Optional SynthSeg posteriors (e.g. `anat_fs_al_posteriors.nii.gz`) for an alternative tissue fraction |
+| `tissueFracName`, `posteriorNonTissueVols`, `posteriorNVols` | `anat_fs_tissueFrac_al.nii.gz`, `0,3,4,11,12,16,21,22`, 33 | **`afni` only.** SynthSeg tissue fraction = 1 − (background + CSF + ventricles). To use it, also set `qualityMaskNames` to `tissueFracName`. |
 | `fitsSubdir`, `outPref` | `fits`, `ase_fit_results` | output folder (`<subject>/<aseSubjDir>/<fitsSubdir>/<timestamp>/`) and file prefix. `aseFit.sh --tag <label>` names the run folder `<timestamp>_<label>` so later steps can select it (`--fitTag`). |
 | `matlabBin`, `matdir` | `matlab`, repo | MATLAB location |
 | **`B0`** | null = header `B0_T` (changed) | field strength (T) for t_crit and the OEF scale. By default the **actual** field from each subject's header, `B0_T` = ImagingFrequency / 42.577478518 MHz/T, written by `asePreProcess.sh`. It used to be the nominal `MagneticFieldStrength` (3). Set a number (or `aseFit.sh --B0`) to override. Headers without `B0_T` are rejected: rerun `asePreProcess.sh --regenHdr`. |
 
-**Re-running preprocessing stages:** `--regenNifti`, `--regenComments`, `--regenHdr`, `--regenMotion`, `--regenTransfer`, `--regenRegister`, `--regenTransform`. Each one also forces the stages downstream of it. Without them, existing outputs are kept.
+**Re-running preprocessing stages:** `--regenNifti`, `--regenComments`, `--regenHdr`, `--regenMotion`, `--regenAnat` (old name `--regenTransfer`), `--regenRegister`, `--regenTransform`. Each one also forces the stages downstream of it. Without them, existing outputs are kept.
 
 ## Fit: model and frames
 

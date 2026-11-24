@@ -9,6 +9,11 @@
 #   raw_data/<subj>/dcm/<series>/                     -> <dst>/<subj>/raw_data/dcm/<series>       (links)
 #   analyzed/<subj>/dcm.index.dat                     -> <dst>/<subj>/dcm.index.dat               (link)
 #   analyzed/<subj>/session_afni_nortc/<file>         -> <dst>/<subj>/session_afni_nortc/<file>   (links)
+#   fsrecon/<subj>/                                   -> <dst>/<subj>/fsrecon                     (link)
+#
+# fsrecon is what asePreProcess.sh reads by default (anatSource=fsrecon, fsSubjDir=fsrecon); it is only
+# read, never written, so the whole subject folder is linked. session_afni_nortc is kept for the legacy
+# anatSource=afni route.
 #
 # Everything comes from o2co2_ase; nothing is copied. Real (not linked) directories: <dst>,
 # <dst>/<subj>, raw_data, raw_data/dcm, session_afni_nortc, session_ase. The pipeline writes into
@@ -16,8 +21,7 @@
 # so those must not point back into o2co2_ase. session_afni_nortc is a real folder of per-file
 # links so nothing can be created in the original.
 #
-# Files added to o2co2_ase later (e.g. anat_fs_bstem_al+orig, which no subject has yet) are
-# picked up by rerunning this script; asePreProcess.sh then transfers them on its next run.
+# Files added to o2co2_ase later are picked up by rerunning this script.
 #
 # Safe to rerun: existing links are left alone; links pointing elsewhere are reported.
 #
@@ -32,7 +36,7 @@ dryRun=0
 subjList=()
 
 usage() {
-	sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
 	cat <<EOF
 
 Options:
@@ -145,6 +149,9 @@ for s in "${subjList[@]}"; do
 	else
 		problems+="  - $s: no session_afni_nortc in $a${nl}"
 	fi
+
+	if [[ -d $src/fsrecon/$s/mri ]]; then make_link "$src/fsrecon/$s" "$o/fsrecon"
+	else problems+="  - $s: no FreeSurfer recon at $src/fsrecon/$s (needed for anatSource=fsrecon)${nl}"; fi
 done
 
 echo

@@ -1,0 +1,145 @@
+== 0. Provenance ==
+FreeSurfer T1 (mri_convert) = session_afni_nortc/anat_fs_orig.nii: 1
+replayed zero-pad + centre shift vs anat_fs_aparc_aseg.nii: 0 voxels differ
+replayed full chain vs stored anat_fs_aparc_aseg_al: 21 of 1144451 labelled voxels differ
+brainstem labels: 23071 voxels in FreeSurfer space, 23736 after the route-A chain (+2.9%)
+labelled voxels lost to the 20 mm inferior crop: 0
+anatomy -> BOLD affine (anat_fs_brain_al_mat): det 0.9679, singular values [1.0000 0.9960 0.9718]
+== 1. Registrations ==
+A: det 0.9344, singular values [1.0068 0.9916 0.9360]; cost vs FreeSurfer target: lpa+ 1.1877, nmi 0.9798, lpc -0.3202
+B6: det 1.0000, singular values [1.0000 1.0000 1.0000]; cost vs FreeSurfer target: lpa+ 1.2915, nmi 0.9720, lpc -0.1662
+    scales [1.0000 1.0000 1.0000], shears [0.0000 0.0000 0.0000], angles [-0.26 4.32 -0.92] deg
+B9: det 0.9042, singular values [0.9827 0.9626 0.9559]; cost vs FreeSurfer target: lpa+ 1.2287, nmi 0.9826, lpc -0.2951
+    scales [0.9827 0.9559 0.9626], shears [0.0000 0.0000 0.0000], angles [-0.30 4.26 -0.94] deg
+B12: det 0.9390, singular values [1.0114 0.9884 0.9393]; cost vs FreeSurfer target: lpa+ 1.1885, nmi 0.9793, lpc -0.3174
+    scales [0.9889 0.9675 0.9815], shears [-0.0022 -0.0071 0.0725], angles [-0.37 7.55 -0.82] deg
+== 2. Where the routes place each brain voxel in the raw ASE data ==
+brain voxels inside the ASE slab for every route: 1107409 (100.0% of the FreeSurfer brain)
+A vs B12 : |d| median 0.56 mm, 95th 1.11, max 1.57; mean signed (R,A,S) [0.06 0.03 0.14]; median |d| per axis [0.22 0.37 0.24]
+A vs B6  : |d| median 2.18 mm, 95th 5.80, max 7.16; mean signed (R,A,S) [0.08 1.82 0.60]; median |d| per axis [0.23 2.08 0.60]
+A vs B9  : |d| median 1.41 mm, 95th 3.47, max 4.92; mean signed (R,A,S) [0.09 0.88 0.09]; median |d| per axis [0.26 1.11 0.59]
+B12 vs B6: |d| median 2.00 mm, 95th 5.60, max 6.98; mean signed (R,A,S) [0.02 1.79 0.46]; median |d| per axis [0.28 1.86 0.63]
+B12 vs B9: |d| median 1.42 mm, 95th 3.44, max 5.22; mean signed (R,A,S) [0.04 0.85 -0.05]; median |d| per axis [0.16 1.24 0.54]
+regions with the largest A vs B12 displacement (median mm): ctx-lh-frontalpole 1.5, ctx-rh-frontalpole 1.4, ctx-lh-parsorbitalis 1.2, ctx-lh-medialorbitofrontal 1.2, ctx-rh-medialorbitofrontal 1.1, ctx-lh-rostralmiddlefrontal 1.1, ctx-rh-superiorparietal 1.1, ctx-lh-lateralorbitofrontal 1.1
+== 3. ROI membership on the ASE grid (occupancy >= 0.25, as the pipeline) ==
+check: route A rebuilt from its stored matrices vs the pipeline's own ASE-space labels: median Dice 0.8455 (min 0.6420)
+A (as the pipeline wrote it) vs B12: median Dice 0.814 (IQR 0.779-0.846); B12 vs B12 moved 1 mm A-P: median 0.838; A-B agreement is worse than a 1 mm shift in 71% of 163 regions
+transform only (route A rebuilt in one step from FreeSurfer) vs B12: median Dice 0.876 (IQR 0.825-0.915)
+B12 vs B6: median Dice 0.727; A vs B6: 0.687
+B12 vs B9: median Dice 0.781; A vs B9: 0.757
+== 4. Tissue fraction on the ASE grid (CSF = 1 - xvent) ==
+tissue fraction, A vs B12 over 81462 ASE voxels: mean |diff| 0.070 (95th 0.438); CSF > 0.2 flagged: A 14954, B 14598, flag differs in 6304 voxels (7.7%)
+  of which resampling only (A as stored vs A rebuilt in one step): mean |diff| 0.041, flag differs in 4.5%
+  and transform only (A rebuilt vs B12): mean |diff| 0.060, flag differs in 6.6%
+== 5. Brainstem ==
+Midbrain:  5247 mm^3, 100% inside the ASE slab, 55% inside aseg Brain-Stem; ASE voxels A 345.9 / B 342.1; Dice A-B 0.909
+Pons    : 13116 mm^3, 100% inside the ASE slab, 83% inside aseg Brain-Stem; ASE voxels A 838.1 / B 847.0; Dice A-B 0.950
+Medulla :  4475 mm^3, 100% inside the ASE slab, 95% inside aseg Brain-Stem; ASE voxels A 282.0 / B 273.2; Dice A-B 0.896
+SCP     :   233 mm^3, 100% inside the ASE slab, 29% inside aseg Brain-Stem; ASE voxels A NaN / B NaN; Dice A-B NaN
+== 6. ROI values (stats-only fit, default settings) ==
+B0 = 2.8919 T
+OEF : |B12 - A|/A median 1.6% (90th 10.3%), signed median +0.2%; 1 mm A-P shift of B12: median 1.4% (90th 7.1%); n = 157 ROIs
+      B6 vs B12: median 2.9%
+      B9 vs B12: median 2.6%
+R2P : |B12 - A|/A median 2.2% (90th 6.7%), signed median -0.1%; 1 mm A-P shift of B12: median 2.2% (90th 5.8%); n = 163 ROIs
+      B6 vs B12: median 4.1%
+      B9 vs B12: median 3.7%
+vCBV: |B12 - A|/A median 2.2% (90th 12.6%), signed median -0.4%; 1 mm A-P shift of B12: median 2.4% (90th 10.1%); n = 157 ROIs
+      B6 vs B12: median 5.2%
+      B9 vs B12: median 3.7%
+R2  : |B12 - A|/A median 1.0% (90th 3.7%), signed median +0.3%; 1 mm A-P shift of B12: median 1.0% (90th 4.2%); n = 163 ROIs
+      B6 vs B12: median 2.2%
+      B9 vs B12: median 1.5%
+ROIs with finite, positive OEF: A 158, B12 157 (of 163)
+
+== Regions by A vs B12 displacement (median, 95th, mm) ==
+  1032 ctx-lh-frontalpole                         1125   1.47   1.55
+  2032 ctx-rh-frontalpole                         1304   1.44   1.52
+  1019 ctx-lh-parsorbitalis                       2474   1.17   1.34
+  1014 ctx-lh-medialorbitofrontal                 4910   1.16   1.43
+  2014 ctx-rh-medialorbitofrontal                 5392   1.12   1.40
+  1027 ctx-lh-rostralmiddlefrontal               12725   1.11   1.44
+  2029 ctx-rh-superiorparietal                    9189   1.09   1.21
+  1012 ctx-lh-lateralorbitofrontal                7768   1.07   1.40
+  1033 ctx-lh-temporalpole                        2653   1.06   1.19
+  2019 ctx-rh-parsorbitalis                       3027   1.01   1.20
+  1020 ctx-lh-parstriangularis                    3283   1.00   1.17
+  1026 ctx-lh-rostralanteriorcingulate            2090   0.99   1.15
+  2005 ctx-rh-cuneus                              3209   0.98   1.15
+  1029 ctx-lh-superiorparietal                   13077   0.94   1.12
+  2026 ctx-rh-rostralanteriorcingulate            1933   0.94   1.06
+  2012 ctx-rh-lateralorbitofrontal                6781   0.93   1.33
+  2033 ctx-rh-temporalpole                        2721   0.93   1.06
+  1005 ctx-lh-cuneus                              2956   0.90   1.08
+  2008 ctx-rh-inferiorparietal                    9873   0.88   1.07
+  2011 ctx-rh-lateraloccipital                   10566   0.86   1.11
+  2021 ctx-rh-pericalcarine                       2043   0.80   0.92
+  2025 ctx-rh-precuneus                           8935   0.79   1.10
+   255 CC_Anterior                                1029   0.77   0.90
+  1008 ctx-lh-inferiorparietal                   10864   0.76   0.98
+  1006 ctx-lh-entorhinal                          1890   0.76   0.93
+  2022 ctx-rh-postcentral                         8077   0.76   1.08
+  1025 ctx-lh-precuneus                          10094   0.75   1.06
+  1018 ctx-lh-parsopercularis                     3968   0.75   0.87
+  1021 ctx-lh-pericalcarine                       2351   0.74   0.91
+  2017 ctx-rh-paracentral                         3308   0.73   0.95
+  2027 ctx-rh-rostralmiddlefrontal               21409   0.71   1.30
+  1028 ctx-lh-superiorfrontal                    18484   0.70   1.24
+  1011 ctx-lh-lateraloccipital                   11765   0.70   1.03
+  2020 ctx-rh-parstriangularis                    6079   0.66   0.94
+  2028 ctx-rh-superiorfrontal                    23357   0.66   1.17
+  1017 ctx-lh-paracentral                         3047   0.65   0.88
+  1003 ctx-lh-caudalmiddlefrontal                 5793   0.65   0.77
+    26 Left-Accumbens-area                         433   0.65   0.75
+  2024 ctx-rh-precentral                          7887   0.64   0.97
+    58 Right-Accumbens-area                        558   0.63   0.73
+  1035 ctx-lh-insula                              7310   0.62   0.83
+  2031 ctx-rh-supramarginal                       6351   0.61   0.77
+    18 Left-Amygdala                              1651   0.61   0.71
+  2006 ctx-rh-entorhinal                          1487   0.60   0.78
+  1024 ctx-lh-precentral                         13055   0.59   0.75
+    11 Left-Caudate                               3263   0.58   0.80
+  1002 ctx-lh-caudalanteriorcingulate              827   0.58   0.77
+   254 CC_Mid_Anterior                             512   0.55   0.64
+    50 Right-Caudate                              3404   0.54   0.74
+    54 Right-Amygdala                             1604   0.53   0.63
+  2002 ctx-rh-caudalanteriorcingulate             1740   0.53   0.74
+  1022 ctx-lh-postcentral                         8851   0.52   0.91
+    12 Left-Putamen                               4389   0.52   0.71
+  2035 ctx-rh-insula                              6915   0.52   0.71
+  1030 ctx-lh-superiortemporal                    9887   0.49   1.03
+  1015 ctx-lh-middletemporal                      9692   0.49   0.96
+  1031 ctx-lh-supramarginal                      10485   0.49   0.72
+  2013 ctx-rh-lingual                             6450   0.48   0.75
+  2015 ctx-rh-middletemporal                     11637   0.48   0.85
+  2009 ctx-rh-inferiortemporal                   11516   0.47   0.84
+  2003 ctx-rh-caudalmiddlefrontal                 4479   0.47   0.69
+  2023 ctx-rh-posteriorcingulate                  2577   0.46   0.61
+  1023 ctx-lh-posteriorcingulate                  2725   0.44   0.58
+  2010 ctx-rh-isthmuscingulate                    1905   0.44   0.61
+  2001 ctx-rh-bankssts                            1953   0.43   0.55
+  2018 ctx-rh-parsopercularis                     3578   0.43   0.58
+  1010 ctx-lh-isthmuscingulate                    2817   0.43   0.62
+    51 Right-Putamen                              4519   0.43   0.64
+    13 Left-Pallidum                              1711   0.42   0.55
+  2030 ctx-rh-superiortemporal                    9932   0.42   0.91
+  1013 ctx-lh-lingual                             7129   0.41   0.76
+    16 Brain-Stem                                19704   0.39   0.59
+  2007 ctx-rh-fusiform                            8024   0.38   0.77
+    52 Right-Pallidum                             1624   0.37   0.50
+   253 CC_Central                                  519   0.36   0.43
+  1009 ctx-lh-inferiortemporal                   12244   0.36   0.90
+    17 Left-Hippocampus                           3893   0.35   0.58
+    28 Left-VentralDC                             3862   0.33   0.52
+    60 Right-VentralDC                            3909   0.31   0.50
+  1016 ctx-lh-parahippocampal                     1746   0.30   0.50
+   251 CC_Posterior                               1145   0.30   0.38
+    53 Right-Hippocampus                          3982   0.29   0.49
+   252 CC_Mid_Posterior                            730   0.28   0.33
+  2034 ctx-rh-transversetemporal                   676   0.27   0.33
+  1007 ctx-lh-fusiform                            8459   0.27   0.87
+  1001 ctx-lh-bankssts                            1889   0.26   0.41
+  1034 ctx-lh-transversetemporal                  1155   0.26   0.37
+  2016 ctx-rh-parahippocampal                     1877   0.26   0.42
+    49 Right-Thalamus-Proper                      6909   0.20   0.35
+    10 Left-Thalamus-Proper                       6706   0.20   0.37

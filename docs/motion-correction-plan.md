@@ -34,6 +34,29 @@ A real head does not move in step with the dTE schedule. The affected directions
 
 Plot: `docs/figures/preproc_registration/reg5_motion.png` (made by `Scripts/comparePreprocRegistration.m`).
 
+## Reading reg5_motion.png (old vs new preprocessing, bch046)
+
+**Top six panels: motion parameters per frame.** The x-axis is the acquired frame (0–97, scan order); the grey band is the z-shim block (frames 90–97). Each panel is one of 3dvolreg's six rigid-body parameters (dS, dL, dP = shifts toward superior, left, posterior), relative to raw frame 0.
+
+| marker | what it is |
+|---|---|
+| blue line | new pipeline: one 3dvolreg run over all of echo 1; the same transforms are applied to echo 2 |
+| orange circles / squares | old pipeline, echo 1: 3dvolreg run separately on its two dTE-sorted halves (split 1 / split 2) |
+| grey circles / squares | old pipeline, echo 2: its own 3dvolreg, registered to the echo-1 base |
+
+1. **Orange on blue: old and new echo-1 motion are identical** (RMS difference ≤ 0.002 ° or mm). 3dvolreg registers each frame to the base on its own, so the old repetition split (or any frame order) does not change a frame's transform.
+2. **Grey off blue: the old echo-2 registration was wrong.** Echo 2 comes from the same excitation 32 ms later, so its true motion equals echo 1's. The old echo-2 estimates sit at a near-constant offset (dS ≈ −0.5 mm, pitch ≈ +0.4°, dP ≈ +0.4 mm, roll ≈ +0.1°): an error from matching a TE 93 ms image (more decay and dropout) to a TE 61 ms base. The new pipeline applies the echo-1 transforms to echo 2 instead (decision 2026-11-16, worth +5% vCBV).
+3. **The blue 5-frame sawtooth is contrast, not motion.** It follows the interleaved dTE order (table above). Both pipelines share it.
+4. **The z-shim block has the largest apparent motion**: up to 1.9° pitch and −1.4 mm dS (blue), and 2.7° and −2.4 mm (grey). Same mechanism: the z-moments change the inferior dropout.
+5. **The slow trends are probably the real motion, and they are small**: roll rises to about 0.2° by frame 25 and drifts back, dL steps up about 0.1 mm near frame 17, yaw drifts slowly. For this subject the real motion (under about 0.2° and 0.2 mm) is smaller than the contrast-driven sawtooth, so here motion correction mostly adds contrast-driven shifts. Check whether that holds for subjects who move more before choosing an option below.
+
+**Bottom panel: old vs new motion-corrected images.** For each frame: RMS(old − new) / RMS(new) inside the brain, in %. It is a whole-image summary dominated by edges and high-contrast areas, not a per-voxel signal change.
+- **Echo 1: about 0.01%.** The images are effectively identical.
+- **Echo 2: a steady ~4.5% across the sweep.** This mixes the transform offset in point 2 with an interpolation difference (old: 3dvolreg Fourier; new: 3dAllineate wsinc5). The offset probably dominates (half a millimetre at edges with 1.7 mm voxels costs several percent), but this figure does not separate the two. Re-applying the old echo-2 transforms with wsinc5 would.
+- **A spike to 33% in the z-shim block (frames 90–93)**: the two pipelines' transforms disagree most there (the old echo-2 registration's large spurious moves against the echo-1 ones). Neither is right; it shows these frames are the most sensitive to motion handling. They are used only to estimate Gz, never in the decay fits.
+
+**Conclusion for old vs new:** echo-1 motion correction is unchanged, and the new pipeline removes a ~0.5 mm / 0.4° cross-echo misalignment in echo 2. The dTE-locked sawtooth and the z-shim spikes are present in both pipelines and are the subject of this plan.
+
 ## Why it matters even though it is sub-voxel
 
 The errors are small: 0.6 mm against 1.72 × 1.72 × 4.8 mm voxels. But they are **correlated with τ, the variable the fit regresses on**. A random registration error would only add noise. A τ-correlated shift adds bias wherever the image changes steeply in space (CSF borders, cortex, the inferior frontal lobe): the shift creates a fake τ-dependence that the fit takes up as R2′ or short-regime curvature.

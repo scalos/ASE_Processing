@@ -9,11 +9,16 @@
 #      the same per-frame transforms applied to the other echoes (all echoes of a frame come from
 #      the same excitation, so they share its head position; avoids cross-TE registration).
 #      motionMode=perEcho: 3dvolreg on each echo against the echo-1 base (legacy).
-#   5. transfer anatomical/segmentation volumes from transferSrcDir (+orig -> nifti)   [if missing]
-#   6. register ase_base to the anatomical (3dAllineate) and make the inverse matrix   [if missing]
+#   5. anatomy. anatSource=fsrecon (default): convert the FreeSurfer volumes (fsVolumes) from
+#      <fsSubjDir>/mri with mri_convert, and build the registration target (T1 x step(aseg),
+#      3dUnifize) and the xvent tissue mask (aparc+aseg > 0 minus the ventricles) on FreeSurfer's
+#      own grid. anatSource=afni (legacy): copy the BOLD-aligned "_al" volumes from transferSrcDir
+#      (+orig -> nifti). See docs/anat-route-report.md.                                [if missing]
+#   6. register ase_base to the anatomical (3dAllineate, registerDof parameters) and make the
+#      inverse matrix. The settings are recorded next to the matrix; a change re-registers.
 #   7. transform segmentations into ASE space (nearest neighbor)
-#   7b. optional: build a tissue fraction (tissueFracName) from SynthSeg posteriors (tissuePosteriorName):
-#       1 - sum(background, CSF, ventricle posteriors)                                 [if missing]
+#   7b. optional (anatSource=afni only): build a tissue fraction (tissueFracName) from SynthSeg
+#       posteriors (tissuePosteriorName): 1 - sum(background, CSF, ventricle posteriors) [if missing]
 #   8. resample quality masks (qualityMaskNames) onto the ASE grid (linear -> fractions 0..1)
 # Existing outputs are skipped unless regenerated. Regenerating an upstream stage forces its
 # downstream stages (and overwrites). Settings: script defaults < config "pipeline" section < flags.
@@ -46,25 +51,38 @@ motionApplyInterp="wsinc5"          # 3dAllineate -final for echoes > 1 (motionM
 baseName=ase_base.nii.gz
 baseFrame=0
 baseAlName=ase_base_al.nii.gz
-regBaseName=anat_fs_brain_al.nii.gz
-allineateOpts="-twopass -cost lpa+ -autoweight -fineblur 1 -cmass"
+# ---- anatomy (stage 5) ----
+anatSource=fsrecon                  # fsrecon | afni (legacy: BOLD-aligned volumes from transferSrcDir)
+# fsrecon: FreeSurfer subject folder, subject-relative or absolute; %SUBJ% is replaced by the subject ID
+fsSubjDir=fsrecon
+# fsrecon: <file in fsSubjDir/mri>=<name in aseSubjDir>, comma-separated. T1.mgz and aseg.mgz make the
+# registration target, aparc+aseg.mgz the xvent mask; the others are only segmentations.
+fsVolumes="T1.mgz=anat_fs_T1.nii.gz,aseg.mgz=anat_fs_aseg.nii.gz,aparc+aseg.mgz=anat_fs_aparc_aseg.nii.gz,wmparc.mgz=anat_fs_wmparc.nii.gz,brainstemSsLabels.v13.FSvoxelSpace.mgz=anat_fs_bstem.nii.gz"
+xventName=anat_fs_xvent_mask.nii.gz          # fsrecon: aparc+aseg > 0 minus xventExcludeLabels
+xventExcludeLabels="4,5,14,15,43,44"         # lateral, inferior-lateral, 3rd and 4th ventricles (as the old xvent)
+# "auto" = the names for anatSource (fsrecon: anat_fs_brain, anat_fs_aparc_aseg, anat_fs_wmparc,
+# anat_fs_bstem, anat_fs_xvent_mask; afni: the "_al" names). An empty segNames means no ROI stats.
+regBaseName=auto
+segNames=auto
+qualityMaskNames=auto                        # tissue fractions resampled to the ASE grid; empty = none
+registerDof=12                      # ase_base -> anatomy: 12 (affine, default), 9 (+ scale), 6 (rigid)
+allineateOpts="-twopass -cost lpa+ -autoweight -fineblur 1 -cmass"   # no -warp here: use registerDof
 tformName=ase_base_al_mat.aff12.1D
 tformApplyName=ase_base_al_inv_mat.aff12.1D
+# afni (legacy) only:
 transferSrcDir=session_afni_nortc
 transferNames="anat_fs_brain_al.nii.gz,anat_fs_brain_al_mask.nii.gz,anat_fs_xvent_mask_al.nii.gz,anat_fs_bstem_al.nii.gz"
-segNames="anat_fs_aparc_aseg_al.nii.gz,anat_fs_wmparc_al.nii.gz"
 segSuffix="_ase"
-qualityMaskNames="anat_fs_xvent_mask_al.nii.gz"   # tissue fractions resampled to the ASE grid; empty = none
 # Optional SynthSeg tissue fraction (off by default). To use it instead of xvent, set
 #   tissuePosteriorName=anat_fs_al_posteriors.nii.gz  and  qualityMaskNames=anat_fs_tissueFrac_al.nii.gz
 # (and qualityMaskNames for aseFit.sh). Note SynthSeg's cortex extends into FreeSurfer's sulcal CSF.
-tissuePosteriorName=""                             # SynthSeg posteriors (NIfTI) in transferSrcDir; empty = off
+tissuePosteriorName=""                             # SynthSeg posteriors (NIfTI) in transferSrcDir; empty = off (afni only)
 tissueFracName="anat_fs_tissueFrac_al.nii.gz"      # built from the posteriors (anatomical grid)
 posteriorNonTissueVols="0,3,4,11,12,16,21,22"      # 0-based sub-bricks: background, L lat/inf-lat vent,
                                                    #   3rd, 4th vent, CSF (label 24), R lat/inf-lat vent
 posteriorNVols=33                                  # expected sub-bricks (SynthSeg standard label set)
 
-pipelineKeys="allSubjDir dataList echo1Col echoSpacing nEchos aseSubjDir rawDataDir dcmIndexFile scannerCode commentScript rawNii pattern_dicomHdr pattern_dteHdr aseProcName motionParamName hdrFileName volregOpts motionMode motionMatName motionApplyInterp baseName baseFrame baseAlName regBaseName allineateOpts tformName tformApplyName transferSrcDir transferNames segNames segSuffix qualityMaskNames tissuePosteriorName tissueFracName posteriorNonTissueVols posteriorNVols"
+pipelineKeys="allSubjDir dataList echo1Col echoSpacing nEchos aseSubjDir rawDataDir dcmIndexFile scannerCode commentScript rawNii pattern_dicomHdr pattern_dteHdr aseProcName motionParamName hdrFileName volregOpts motionMode motionMatName motionApplyInterp baseName baseFrame baseAlName anatSource fsSubjDir fsVolumes xventName xventExcludeLabels registerDof regBaseName allineateOpts tformName tformApplyName transferSrcDir transferNames segNames segSuffix qualityMaskNames tissuePosteriorName tissueFracName posteriorNonTissueVols posteriorNVols"
 
 # regeneration / logging / retry
 regenNifti=0; regenComments=0; regenHdr=0; regenMotion=0
@@ -97,7 +115,8 @@ Regeneration (overwrites; downstream stages are forced too):
   --regenComments        dTE / image-comment header (forces combined header)
   --regenHdr             combined json header only
   --regenMotion          motion correction only
-  --regenTransfer        re-copy anatomical/segmentation files (forces segmentation transforms)
+  --regenAnat           redo stage 5: FreeSurfer conversion (fsrecon) or transfer (afni); forces
+                         registration and segmentation transforms. --regenTransfer is the old name.
   --regenRegister        re-register ase_base to anatomical (forces segmentation transforms)
   --regenTransform       segmentation transforms and quality-mask resampling only
 
@@ -182,7 +201,7 @@ while [[ $# -gt 0 ]]; do
 		--regenComments)   regenComments=1;   shift ;;
 		--regenHdr)        regenHdr=1;        shift ;;
 		--regenMotion)     regenMotion=1;     shift ;;
-		--regenTransfer)   regenTransfer=1;   shift ;;
+		--regenTransfer|--regenAnat) regenTransfer=1; shift ;;
 		--regenRegister)   regenRegister=1;   shift ;;
 		--regenTransform)  regenTransform=1;  shift ;;
 		--omitFailLog)     omitFailLog=1;     shift ;;
@@ -216,6 +235,37 @@ for k in aseProcName motionParamName; do
 		echo "Error: $k must contain $echoTok when nEchos > 1 (got: ${!k})" >&2; exit 1
 	fi
 done
+
+# anatomy source and the names that depend on it
+case $anatSource in
+	fsrecon)
+		[[ $regBaseName == auto ]] && regBaseName=anat_fs_brain.nii.gz
+		[[ $segNames == auto ]] && segNames="anat_fs_aparc_aseg.nii.gz,anat_fs_wmparc.nii.gz,anat_fs_bstem.nii.gz"
+		[[ $qualityMaskNames == auto ]] && qualityMaskNames=$xventName
+		if [[ -n $tissuePosteriorName ]]; then
+			echo "Error: tissuePosteriorName (SynthSeg tissue fraction) is only available with anatSource=afni" >&2; exit 1
+		fi
+		if [[ ! $xventExcludeLabels =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+			echo "Error: xventExcludeLabels must be comma-separated label numbers (got: $xventExcludeLabels)" >&2; exit 1
+		fi ;;
+	afni)
+		[[ $regBaseName == auto ]] && regBaseName=anat_fs_brain_al.nii.gz
+		[[ $segNames == auto ]] && segNames="anat_fs_aparc_aseg_al.nii.gz,anat_fs_wmparc_al.nii.gz"
+		[[ $qualityMaskNames == auto ]] && qualityMaskNames=anat_fs_xvent_mask_al.nii.gz ;;
+	*) echo "Error: anatSource must be fsrecon or afni (got: $anatSource)" >&2; exit 1 ;;
+esac
+case $registerDof in
+	12) regWarp=affine_general ;;
+	9)  regWarp=shift_rotate_scale ;;
+	6)  regWarp=shift_rotate ;;
+	*)  echo "Error: registerDof must be 12, 9 or 6 (got: $registerDof)" >&2; exit 1 ;;
+esac
+if [[ " $allineateOpts " == *" -warp "* ]]; then
+	echo "Error: allineateOpts contains -warp; set registerDof instead" >&2; exit 1
+fi
+# what stage 6 was run with; recorded next to the matrix so a change forces a new registration
+regSettings="anatSource=$anatSource regBaseName=$regBaseName registerDof=$registerDof allineateOpts=$allineateOpts"
+regStampName="${tformName%.aff12.1D}_settings.txt"
 
 # ---------------- helpers ----------------
 is_num() { [[ $1 =~ ^-?[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$ ]]; }
@@ -256,23 +306,58 @@ segArr=(); transferArr=(); qmArr=()
 [[ -n $qualityMaskNames ]] && IFS=',' read -ra qmArr <<< "$qualityMaskNames"
 nSeg=${#segArr[@]}
 nQm=${#qmArr[@]}
-xferList=()
-if ((nSeg > 0)); then
+# stage-5 items: xferList = names in aseSubjDir; xferSrcList = their source (afni: +orig dataset
+# name; fsrecon: file in <fsSubjDir>/mri)
+xferList=(); xferSrcList=()
+fsT1="" fsAseg="" fsAparc=""
+if ((nSeg > 0)) && [[ $anatSource == afni ]]; then
 	for name in "${transferArr[@]}" "${segArr[@]}" "${qmArr[@]}"; do
 		[[ -n $tissuePosteriorName && $name == "$tissueFracName" ]] && continue   # built, not transferred
 		dup=0
 		for e in "${xferList[@]}"; do [[ $e == "$name" ]] && dup=1; done
-		((dup)) || xferList+=("$name")
+		((dup)) || { xferList+=("$name"); xferSrcList+=("$(strip_nii "$name")+orig"); }
 	done
+elif ((nSeg > 0)); then
+	IFS=',' read -ra fsItems <<< "$fsVolumes"
+	for item in "${fsItems[@]}"; do
+		if [[ $item != *=* || -z ${item%%=*} || -z ${item#*=} ]]; then
+			echo "Error: fsVolumes entries must be <file>=<name> (got: $item)" >&2; exit 1
+		fi
+		xferSrcList+=("${item%%=*}"); xferList+=("${item#*=}")
+		case ${item%%=*} in
+			T1.mgz)         fsT1=${item#*=} ;;
+			aseg.mgz)       fsAseg=${item#*=} ;;
+			aparc+aseg.mgz) fsAparc=${item#*=} ;;
+		esac
+	done
+	if [[ -z $fsT1 || -z $fsAseg ]]; then
+		echo "Error: fsVolumes must include T1.mgz and aseg.mgz (they make the registration target)" >&2; exit 1
+	fi
 fi
 nXfer=${#xferList[@]}
+# fsrecon: the xvent mask is built when a later stage uses it
+needXvent=0
+if [[ $anatSource == fsrecon ]] && ((nSeg > 0)); then
+	for e in "${qmArr[@]}" "${segArr[@]}"; do [[ $e == "$xventName" ]] && needXvent=1; done
+	if ((needXvent == 1)) && [[ -z $fsAparc ]]; then
+		echo "Error: $xventName is used but fsVolumes has no aparc+aseg.mgz entry" >&2; exit 1
+	fi
+fi
 
 xfer_index() { local j; for ((j = 0; j < nXfer; j++)); do [[ ${xferList[j]} == "$1" ]] && { printf '%d' "$j"; return 0; }; done; return 1; }
 
 # xfer_required <name>: a later stage reads it (registration target, segmentation, quality mask).
 # Other transferNames entries are optional: a missing source is a warning, not a failure.
+# fsrecon: the target's inputs (T1, aseg) and, when the xvent mask is used, aparc+aseg are required;
+# a missing segmentation is left out with a warning (as aseFit.sh does).
 xfer_required() {
 	local e
+	if [[ $anatSource == fsrecon ]]; then
+		[[ $1 == "$fsT1" || $1 == "$fsAseg" ]] && return 0
+		((needXvent == 1)) && [[ $1 == "$fsAparc" ]] && return 0
+		for e in "${qmArr[@]}"; do [[ $e == "$1" ]] && return 0; done
+		return 1
+	fi
 	[[ $1 == "$regBaseName" ]] && return 0
 	for e in "${segArr[@]}" "${qmArr[@]}"; do [[ $e == "$1" ]] && return 0; done
 	return 1
@@ -282,6 +367,9 @@ xfer_required() {
 avail() {
 	local j
 	[[ -e $subjBase/$1 ]] && return 0
+	[[ $anatSource == fsrecon && $1 == "$regBaseName" && $brainDo == 1 ]] && return 0
+	[[ $anatSource == fsrecon && $1 == "$xventName" && $xventDo == 1 ]] && return 0
+	[[ -n $tissuePosteriorName && $1 == "$tissueFracName" && $tfDo == 1 ]] && return 0
 	for ((j = 0; j < nXfer; j++)); do
 		[[ ${xferList[j]} == "$1" && ${xferDo[j]} == 1 ]] && return 0
 	done
@@ -291,10 +379,17 @@ avail() {
 # tools
 needTools="dcm2niix dcm2niix_afni 3dinfo 3drefit 3dvolreg 3dcalc"
 [[ $motionMode == echo1 ]] && ((nEchos > 1)) && needTools+=" 3dAllineate"
-((nSeg > 0)) && needTools+=" 3dAllineate cat_matvec 3dAFNItoNIFTI"
+((nSeg > 0)) && needTools+=" 3dAllineate cat_matvec"
+((nSeg > 0)) && [[ $anatSource == afni ]] && needTools+=" 3dAFNItoNIFTI"
+((nSeg > 0)) && [[ $anatSource == fsrecon ]] && needTools+=" mri_convert 3dUnifize"
 for t in $needTools; do
-	if ! command -v "$t" > /dev/null 2>&1; then echo "Error: $t not found on PATH" >&2; exit 1; fi
+	if ! command -v "$t" > /dev/null 2>&1; then
+		echo "Error: $t not found on PATH" >&2
+		[[ $t == mri_convert ]] && echo "       anatSource=fsrecon needs FreeSurfer (source \$FREESURFER_HOME/SetUpFreeSurfer.sh), or set anatSource=afni" >&2
+		exit 1
+	fi
 done
+echo "Anatomy: anatSource=$anatSource, registration $registerDof parameters ($regWarp)"
 
 # AFNI build in use, and whether its 3dAllineate knows the registration cost (old builds,
 # e.g. 18.0.22, lack lpa+ and would otherwise fail on every subject)
@@ -317,7 +412,7 @@ check_subject() {
 	missingReasons=""; ok=1
 	echoNums=(); doNiiE=(); doSideE=(); doCommE=(); doMotionE=(); xferDo=(); segDo=(); qmDo=()
 	anyNii=0; anySide=0; anyComm=0; anyMotion=0
-	doRegister=0; doInverse=0; doHdr=0; tfDo=0
+	doRegister=0; doInverse=0; doHdr=0; tfDo=0; brainDo=0; xventDo=0
 
 	if [[ ! -d $subjDir ]]; then
 		missingReasons+="  - subject directory not found: $subjDir${nl}"
@@ -373,9 +468,6 @@ check_subject() {
 		if [[ -z $commentScriptPath || ! -x $commentScriptPath ]]; then
 			ok=0; missingReasons+="  - comment script not found or not executable: $commentScript${nl}"
 		fi
-		if [[ ! -e $indexFile ]]; then
-			warnMsg+="  - warning: dicom index file not found ($indexFile); the comment script will use all dicoms in each series folder${nl}"
-		fi
 	fi
 
 	if ((regenHdr == 1 || anyNii == 1 || anySide == 1 || anyComm == 1)) || [[ ! -e $subjBase/$hdrFileName ]]; then
@@ -384,30 +476,66 @@ check_subject() {
 
 	# ---- anatomical transfer, registration, segmentation transforms ----
 	if ((nSeg > 0)); then
+		local fsMissing=0
+		if [[ $anatSource == fsrecon && ! -d $fsBase/mri ]]; then fsMissing=1; fi
 		for ((j = 0; j < nXfer; j++)); do
 			name=${xferList[j]}; xferDo[j]=0
 			if ((regenTransfer == 1)) || [[ ! -e $subjBase/$name ]]; then
 				xferDo[j]=1
-				base=$(strip_nii "$name")
 				srcErr=""
-				if [[ ! -e $transferSrc/${base}+orig.HEAD ]]; then
-					srcErr="source dataset for $name not found: $transferSrc/${base}+orig.HEAD"
-				elif ! compgen -G "$transferSrc/${base}+orig.BRIK*" > /dev/null; then
-					srcErr="source dataset for $name has .HEAD but no .BRIK: $transferSrc/${base}+orig"
+				if [[ $anatSource == fsrecon ]]; then
+					if ((fsMissing == 1)); then
+						srcErr="FreeSurfer subject folder not found: $fsBase/mri (fsSubjDir=$fsSubjDir)"
+						[[ $missingReasons == *"$srcErr"* ]] && srcErr="(same)"
+					elif [[ ! -e $fsBase/mri/${xferSrcList[j]} ]]; then
+						srcErr="FreeSurfer volume for $name not found: $fsBase/mri/${xferSrcList[j]}"
+					fi
+				elif [[ ! -e $transferSrc/${xferSrcList[j]}.HEAD ]]; then
+					srcErr="source dataset for $name not found: $transferSrc/${xferSrcList[j]}.HEAD"
+				elif ! compgen -G "$transferSrc/${xferSrcList[j]}.BRIK*" > /dev/null; then
+					srcErr="source dataset for $name has .HEAD but no .BRIK: $transferSrc/${xferSrcList[j]}"
 				fi
 				if [[ -n $srcErr ]]; then
 					if xfer_required "$name"; then
-						ok=0; missingReasons+="  - $srcErr${nl}"
-					else
-						# transfer-only entry (nothing later uses it): skip it; rerun once the source exists
+						ok=0; [[ $srcErr == "(same)" ]] || missingReasons+="  - $srcErr${nl}"
+					elif [[ $srcErr == "(same)" || $fsMissing == 1 ]]; then
 						xferDo[j]=0
-						warnMsg+="  - warning: optional transfer skipped, $srcErr${nl}"
+					else
+						# nothing later needs it (or it is a segmentation, left out of the ROIs): skip it;
+						# rerun once the source exists
+						xferDo[j]=0
+						warnMsg+="  - warning: optional anatomy skipped, $srcErr${nl}"
 					fi
 				fi
 			fi
 		done
 
-		if ((regenRegister == 1)) || [[ ! -e $subjBase/$tformName ]]; then doRegister=1; fi
+		# fsrecon: registration target and xvent mask, built on FreeSurfer's grid from the converted volumes
+		if [[ $anatSource == fsrecon ]]; then
+			if ((regenTransfer == 1 || xferDo[$(xfer_index "$fsT1")] == 1 || xferDo[$(xfer_index "$fsAseg")] == 1)) || \
+					[[ ! -e $subjBase/$regBaseName ]]; then
+				brainDo=1
+			fi
+			if ((needXvent == 1)); then
+				if ((regenTransfer == 1 || xferDo[$(xfer_index "$fsAparc")] == 1)) || [[ ! -e $subjBase/$xventName ]]; then
+					xventDo=1
+				fi
+			fi
+		fi
+
+		if ((regenRegister == 1 || brainDo == 1)) || [[ ! -e $subjBase/$tformName ]]; then doRegister=1; fi
+		# a matrix made with other settings (e.g. the old BOLD-aligned anatomy) is not reused
+		if ((doRegister == 0)); then
+			if [[ ! -e $subjBase/$regStampName ]]; then
+				if [[ $anatSource == fsrecon ]]; then
+					doRegister=1
+					warnMsg+="  - note: existing $tformName has no record of its settings; re-registering to the FreeSurfer anatomy${nl}"
+				fi
+			elif [[ $(cat "$subjBase/$regStampName") != "$regSettings" ]]; then
+				doRegister=1
+				warnMsg+="  - note: registration settings changed since $tformName was made; re-registering${nl}"
+			fi
+		fi
 		if [[ $tformApplyName != "$tformName" ]]; then
 			if ((doRegister == 1)) || [[ ! -e $subjBase/$tformApplyName ]]; then doInverse=1; fi
 		fi
@@ -417,9 +545,16 @@ check_subject() {
 
 		for ((k = 0; k < nSeg; k++)); do
 			name=${segArr[k]}; base=$(strip_nii "$name")
-			idx=$(xfer_index "$name")
 			segDo[k]=0
-			if ((regenTransform == 1 || doRegister == 1)) || [[ ! -e $subjBase/${base}${segSuffix}.nii.gz ]] || ((xferDo[idx] == 1)); then
+			if ! avail "$name"; then
+				# fsrecon: left out of the ROI table (aseFit.sh warns too); afni: caught as a missing transfer
+				[[ $anatSource == fsrecon ]] && warnMsg+="  - warning: segmentation $name not available; left out${nl}"
+				continue
+			fi
+			srcNew=0
+			if [[ $anatSource == fsrecon && $name == "$xventName" ]]; then srcNew=$xventDo
+			elif idx=$(xfer_index "$name"); then srcNew=${xferDo[idx]}; fi
+			if ((regenTransform == 1 || doRegister == 1 || srcNew == 1)) || [[ ! -e $subjBase/${base}${segSuffix}.nii.gz ]]; then
 				segDo[k]=1
 			fi
 		done
@@ -437,10 +572,17 @@ check_subject() {
 		# quality masks: same matrix, but onto the ASE grid (master = baseName)
 		for ((k = 0; k < nQm; k++)); do
 			name=${qmArr[k]}; base=$(strip_nii "$name")
+			srcNew=0
 			if [[ -n $tissuePosteriorName && $name == "$tissueFracName" ]]; then
 				srcNew=$tfDo
-			else
-				idx=$(xfer_index "$name"); srcNew=${xferDo[idx]}
+			elif [[ $anatSource == fsrecon && $name == "$xventName" ]]; then
+				srcNew=$xventDo
+			elif idx=$(xfer_index "$name"); then
+				srcNew=${xferDo[idx]}
+			fi
+			if ! avail "$name"; then
+				ok=0; missingReasons+="  - quality mask $name not available (not in fsVolumes / transferNames, not built)${nl}"
+				continue
 			fi
 			qmDo[k]=0
 			if ((regenTransform == 1 || doRegister == 1)) || [[ ! -e $subjBase/${base}${segSuffix}.nii.gz ]] || ((srcNew == 1)); then
@@ -536,10 +678,19 @@ stage_comments() {
 		series=${echoNums[ei]}
 		dte=$(subst_series "$pattern_dteHdr" "$series")
 		echo "[$subjID] Reading image comments for series $series -> $dte"
-		if ! "$commentScriptPath" "$rawBase/$series" "$indexFile" "$series" "$scannerCode" "$subjBase/$dte"; then
+		# the script's own messages go to the log: its errors on failure, its notes as warnings
+		cmtLog=$(mktemp)
+		if ! "$commentScriptPath" "$rawBase/$series" "$indexFile" "$series" "$scannerCode" "$subjBase/$dte" > "$cmtLog" 2>&1; then
+			cat "$cmtLog"
 			rm -f "$subjBase/$dte"
-			procErr+="  - comment script failed for series $series${nl}"; return 1
+			procErr+="  - comment script failed for series $series:${nl}$(sed 's/^/      /' "$cmtLog")${nl}"
+			rm -f "$cmtLog"; return 1
 		fi
+		cat "$cmtLog"
+		while IFS= read -r line; do
+			warnMsg+="  - note: ${line#Note: }${nl}"
+		done < <(grep '^Note:' "$cmtLog")
+		rm -f "$cmtLog"
 	done
 	return 0
 }
@@ -617,7 +768,22 @@ build_header() {
 			firstDte=$dteMs; firstZm=$zmCsv
 		else
 			[[ $dteMs == "$firstDte" ]] || warnMsg+="  - warning: dTE values for echo $echoLabel differ from echo 1${nl}"
-			[[ $zmCsv == "$firstZm" ]]  || warnMsg+="  - warning: ZMoment values for echo $echoLabel differ from echo 1${nl}"
+			# echo k's z-moments are echo 1's scaled by the ratio of their dephasing times (e.g. 76/44 ms),
+			# zero at the same frames; warn only if they are not a constant multiple
+			zmCheck=$(awk -v a="$firstZm" -v b="$zmCsv" 'BEGIN {
+				n = split(a, x, ","); m = split(b, y, ",")
+				if (n != m) { print "a different number of frames"; exit }
+				r = ""
+				for (i = 1; i <= n; i++) {
+					if ((x[i] + 0 == 0) != (y[i] + 0 == 0)) { print "zero at different frames"; exit }
+					if (x[i] + 0 != 0) {
+						q = y[i] / x[i]
+						if (r == "") r = q
+						else if (q / r > 1.01 || q / r < 0.99) { print "not a constant multiple"; exit }
+					}
+				}
+				print "ok" }')
+			[[ $zmCheck == ok ]] || warnMsg+="  - warning: ZMoment values for echo $echoLabel vs echo 1: $zmCheck (expected echo 1's scaled by the dephasing-time ratio)${nl}"
 		fi
 
 		block=$(printf '    {\n      "echo": %d,\n      "series": "%s",\n      "EchoTime_ms": %s,%s\n      "nFrames": %d,\n      "MaxDTE_ms": %s,\n      "StepDTE_ms": %s,\n      "dTE_ms": [%s],\n      "ZMoment": [%s],\n      "file": "%s"\n    }' \
@@ -737,6 +903,7 @@ stage_motion() {
 stage_transfer() {
 	local j name base
 	((nSeg > 0)) || return 0
+	if [[ $anatSource == fsrecon ]]; then stage_fsrecon; return; fi
 	for ((j = 0; j < nXfer; j++)); do
 		((xferDo[j] == 1)) || continue
 		name=${xferList[j]}; base=$(strip_nii "$name")
@@ -752,20 +919,61 @@ stage_transfer() {
 	return 0
 }
 
+# anatSource=fsrecon: FreeSurfer volumes -> NIfTI (no resampling: they share FreeSurfer's 256^3 grid),
+# then the registration target and the xvent mask on that grid (docs/anat-route-report.md)
+stage_fsrecon() {
+	local j name src expr="" lab
+	for ((j = 0; j < nXfer; j++)); do
+		((xferDo[j] == 1)) || continue
+		name=${xferList[j]}; src="$fsBase/mri/${xferSrcList[j]}"
+		echo "[$subjID] Converting $src -> $name"
+		rm -f "$name"
+		if ! mri_convert "$src" "$subjBase/$name" > /dev/null; then
+			rm -f "$name"
+			procErr+="  - mri_convert failed for $src${nl}"; return 1
+		fi
+		if [[ ! -e $name ]]; then
+			procErr+="  - expected file not found after mri_convert: $subjBase/$name${nl}"; return 1
+		fi
+	done
+	if ((brainDo == 1)); then
+		echo "[$subjID] Building registration target $regBaseName: $fsT1 x step($fsAseg), 3dUnifize"
+		rm -f "$regBaseName" .anat_brain_tmp.nii.gz
+		if ! 3dcalc -a "$fsT1" -b "$fsAseg" -expr 'a*step(b)' -datum float -prefix .anat_brain_tmp.nii.gz -overwrite || \
+				! 3dUnifize -prefix "$regBaseName" -overwrite .anat_brain_tmp.nii.gz; then
+			rm -f "$regBaseName" .anat_brain_tmp.nii.gz
+			procErr+="  - could not build $regBaseName${nl}"; return 1
+		fi
+		rm -f .anat_brain_tmp.nii.gz
+	fi
+	if ((xventDo == 1)); then
+		for lab in ${xventExcludeLabels//,/ }; do expr+="${expr:++}equals(a,$lab)"; done
+		echo "[$subjID] Building $xventName: $fsAparc > 0, minus labels $xventExcludeLabels"
+		if ! 3dcalc -a "$fsAparc" -expr "step(a)-step($expr)" -datum byte -prefix "$xventName" -overwrite; then
+			rm -f "$xventName"
+			procErr+="  - could not build $xventName${nl}"; return 1
+		fi
+	fi
+	return 0
+}
+
 stage_register() {
 	((nSeg > 0)) || return 0
 	if ((doRegister == 1)); then
 		ensure_base || return 1
-		echo "[$subjID] Registering $baseName to $regBaseName"
-		rm -f "$tformName"
+		echo "[$subjID] Registering $baseName to $regBaseName ($registerDof parameters)"
+		rm -f "$tformName" "$regStampName"
 		if ! 3dAllineate -prefix "$baseAlName" -base "$regBaseName" -master "$regBaseName" -source "$baseName" \
-				$allineateOpts -1Dmatrix_save "$tformName" -overwrite; then
+				$allineateOpts -warp "$regWarp" -1Dmatrix_save "$tformName" -overwrite; then
 			rm -f "$tformName" "$baseAlName"
 			procErr+="  - 3dAllineate registration failed${nl}"; return 1
 		fi
 		if [[ ! -s $tformName ]]; then
 			procErr+="  - transform file not produced: $tformName${nl}"; return 1
 		fi
+		printf '%s' "$regSettings" > "$regStampName"
+	elif [[ ! -e $regStampName && $anatSource == afni ]]; then
+		printf '%s' "$regSettings" > "$regStampName"      # existing legacy registration: record its settings
 	fi
 	if ((doInverse == 1)); then
 		echo "[$subjID] Creating inverse transform: $tformApplyName"
@@ -927,6 +1135,8 @@ for subjID in "${subjlist[@]}"; do
 	rawBase="$subjDir/$rawDataDir"
 	indexFile="$subjDir/$dcmIndexFile"
 	transferSrc="$subjDir/$transferSrcDir"
+	fsBase=${fsSubjDir//%SUBJ%/$subjID}
+	[[ $fsBase == /* ]] || fsBase="$subjDir/$fsBase"
 	warnMsg=""
 
 	if ! check_subject; then
