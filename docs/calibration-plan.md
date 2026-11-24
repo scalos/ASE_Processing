@@ -8,6 +8,19 @@
 
 *Updated 2026-11-18, end of day.*
 
+**2026-11-20 to 11-24 (preprocessing review):**
+- Cohort preprocessing finished; the only failure is bch045 (the comment script can't find series 116 in `dcm.index.dat`: its ASE comes from a second exam on 08-21 that the index doesn't list). Fixed 2026-11-24: the comment script now reads the whole series folder (see decisions.md).
+- **Adopted 2026-11-24: the anatomy comes from the FreeSurfer recon** (`anatSource = fsrecon`, 12-parameter registration). See [anat-route-report.md](anat-route-report.md).
+- **Calibration is on hold** until the cohort has been preprocessed again with the new anatomy stages.
+
+**Next, on the cluster (before anything below):**
+1. Rerun `Scripts/linkO2co2Ase.sh --src <o2co2_ase>`: it adds the `<subj>/fsrecon` links (existing links are kept).
+2. Make FreeSurfer available (`mri_convert` on PATH); `asePreProcess.sh` checks it at startup.
+3. Run `asePreProcess.sh` on the cohort. Conversion, comments, header and motion correction are kept; stages 5–8 run for every subject (new anatomy, new registration). Expect a note per subject that the registration settings changed or that the anatomy is new.
+4. Read the newest `prepASE_failures_*.txt`. bch045 should now pass, with a note that folder 116 holds DICOM series 16. It never got past stage 2, so the cohort run does stages 2–8 for it with no extra flags. The z-moment warning no longer appears for every subject.
+
+The cluster steps below (Phase 0 QC onwards) follow once this pass is done.
+
 **Done:**
 - `o2co2_ase_proc` built on the cluster from links (`Scripts/linkO2co2Ase.sh`). Brainstem masks are missing for every subject; preprocessing and fitting now warn instead of failing.
 - AFNI on the cluster switched to 26.0.10 (the 2018 build lacked the `lpa+` cost). `asePreProcess.sh` now prints the AFNI build at startup and stops before any subject if its `3dAllineate` doesn't know the cost in `allineateOpts`.
@@ -185,3 +198,4 @@ In `aseView.sh`, on 4–6 subjects chosen to cover the groups and the extremes (
 | 2026-11-18 | AFNI on the cluster | Registration failed (`-cost lpa+` unknown): the login PATH used `/usr/pubsw/packages/AFNI/new` = 18.0.22 (2018). Switched to `/usr/pubsw/packages/AFNI/26.0.10` (`~/.cshrc` lines 38 and 84). Cohort preprocessing restarted with 26.0.10. |
 | 2026-11-18 | `calibrateQuality.m` | Written; tested on `bch046` (scratch copy, both diagnostic runs). Two findings: clean-WM mask smaller than Phase 9's; zshimEcho p99 driven by one 23-voxel cluster. See the status section. |
 | 2026-11-18 | decisions 1–4 (section 5) | healthy cohort = ctrl + mdt; both `dBCorr` settings; second runs not used |
+| 2026-11-24 | anatomy route comparison | `Scripts/compareAnatRoutes.m` on bch046: FreeSurfer + 12-parameter registration matches today's geometry (median 0.56 mm), removes two resampling steps and the BOLD dependency; rigid registration misses a 3–4% anterior–posterior compression. See [anat-route-report.md](anat-route-report.md). |

@@ -17,10 +17,11 @@ nEchos=2
 aseSubjDir=session_ase
 aseProcName="ase_e%ECHO%_proc.nii.gz"
 hdrFileName=ase_hdr.json
-segNames="anat_fs_aparc_aseg_al.nii.gz,anat_fs_wmparc_al.nii.gz,anat_fs_bstem_al.nii.gz"
+anatSource=fsrecon       # which anatomy asePreProcess.sh made: fsrecon | afni (sets the "auto" names below)
+segNames=auto            # auto: fsrecon anat_fs_{aparc_aseg,wmparc,bstem}; afni the same with "_al"
 segSuffix="_ase"
 segLUTs="/autofs/space/guasha_004/users/crbc/yen/ase/GM_WM_long.txt"
-qualityMaskNames="anat_fs_xvent_mask_al.nii.gz"   # quality masks (before segSuffix); used only if present
+qualityMaskNames=auto    # quality masks (before segSuffix); used only if present. auto: anat_fs_xvent_mask[_al]
 fitsSubdir=fits
 outPref=ase_fit_results
 matlabBin=matlab
@@ -59,7 +60,9 @@ Pipeline options (override the config; defaults in brackets):
   --nEchos <n>                [$nEchos]
   --aseProcName <pattern>     Processed echo file name; must contain $echoTok when nEchos > 1 [$aseProcName]
   --hdrFileName <file>        [$hdrFileName]
-  --segNames <a,b,...>        Segmentation names before the suffix is added; empty = no ROI stats [$segNames]
+  --anatSource <src>          fsrecon | afni: anatomy made by asePreProcess.sh; sets the "auto" names [$anatSource]
+  --segNames <a,b,...>        Segmentation names before the suffix is added; empty = no ROI stats;
+                              auto = the names for anatSource [$segNames]
                               Missing ones are left out with a warning; none found = subject skipped
   --segSuffix <str>           [$segSuffix]
   --segLUTs <a,b,...>         LUT file path(s) [$segLUTs]
@@ -154,7 +157,7 @@ if [[ -n $configFile ]]; then
 	if [[ -z $pipeSec ]]; then
 		echo "Warning: no \"pipeline\" section found in $configFile (script defaults used)"
 	fi
-	for key in allSubjDir dataList nEchos aseSubjDir aseProcName hdrFileName segNames segSuffix \
+	for key in allSubjDir dataList nEchos aseSubjDir aseProcName hdrFileName anatSource segNames segSuffix \
 	           segLUTs qualityMaskNames fitsSubdir outPref matlabBin matdir B0; do
 		if val=$(cfg_get "$pipeSec" "$key"); then printf -v "$key" '%s' "$val"; fi
 	done
@@ -175,6 +178,7 @@ while [[ $# -gt 0 ]]; do
 		--nEchos)         need_arg "$@"; nEchos=$2;         shift 2 ;;
 		--aseProcName)    need_arg "$@"; aseProcName=$2;    shift 2 ;;
 		--hdrFileName)    need_arg "$@"; hdrFileName=$2;    shift 2 ;;
+		--anatSource)     need_arg "$@"; anatSource=$2;     shift 2 ;;
 		--segNames)       need_arg "$@"; segNames=$2;       shift 2 ;;
 		--segSuffix)      need_arg "$@"; segSuffix=$2;      shift 2 ;;
 		--segLUTs)        need_arg "$@"; segLUTs=$2;        shift 2 ;;
@@ -214,6 +218,15 @@ fi
 
 overridesJson=""
 [[ -n $fitOverrides ]] && overridesJson="{${fitOverrides}}"
+
+case $anatSource in
+	fsrecon) alSfx="" ;;
+	afni)    alSfx="_al" ;;
+	*) echo "Error: anatSource must be fsrecon or afni (got: $anatSource)" >&2; exit 1 ;;
+esac
+[[ $segNames == auto ]] && segNames="anat_fs_aparc_aseg${alSfx}.nii.gz,anat_fs_wmparc${alSfx}.nii.gz,anat_fs_bstem${alSfx}.nii.gz"
+[[ $qualityMaskNames == auto ]] && qualityMaskNames="anat_fs_xvent_mask${alSfx}.nii.gz"
+echo "Anatomy: anatSource=$anatSource; segmentations: $segNames"
 
 segList=(); lutList=(); qmList=()
 [[ -n $segNames ]] && IFS=',' read -ra segList <<< "$segNames"

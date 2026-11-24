@@ -10,11 +10,15 @@
 | `ase_base.nii.gz` | 4 | echo-1 frame 0 (spin echo): motion and registration reference |
 | `ase_e<k>_proc.nii.gz`, `ase_e<k>_mc.1D` | 4 | motion-corrected echoes and motion parameters (with `motionMode=echo1`, the echo-2 `.1D` is a copy of echo 1's) |
 | `ase_e1_mc_mat.aff12.1D` | 4 | per-frame echo-1 transforms (`motionMode=echo1`) |
-| `anat_fs_*_al.nii.gz` | 5 | transferred anatomy and segmentations |
-| `ase_base_al*.nii.gz`, `ase_base_al_mat.aff12.1D`, `ase_base_al_inv_mat.aff12.1D` | 6 | ASE → anatomy registration |
-| `anat_fs_aparc_aseg_al_ase.nii.gz`, `anat_fs_wmparc_al_ase.nii.gz` | 7 | segmentations in ASE space (on the 1 mm anatomical grid; ROI membership is sub-sampled from these) |
-| `anat_fs_tissueFrac_al.nii.gz` | 7b | optional SynthSeg tissue fraction |
-| `anat_fs_xvent_mask_al_ase.nii.gz` (or `…tissueFrac…_ase`) | 8 | tissue fraction on the ASE grid, used for the CSF criterion |
+| `anat_fs_T1`, `anat_fs_aseg`, `anat_fs_aparc_aseg`, `anat_fs_wmparc`, `anat_fs_bstem` (`.nii.gz`) | 5 | FreeSurfer volumes converted with `mri_convert` (FreeSurfer's 256³ 1 mm grid, not resampled); list in `fsVolumes` |
+| `anat_fs_brain.nii.gz` | 5 | registration target: T1 × step(aseg), 3dUnifize |
+| `anat_fs_xvent_mask.nii.gz` | 5 | tissue mask: aparc+aseg > 0 minus the ventricles (`xventExcludeLabels`) |
+| `ase_base_al.nii.gz`, `ase_base_al_mat.aff12.1D`, `ase_base_al_inv_mat.aff12.1D` | 6 | ASE → anatomy registration (`ase_base_al` = the ASE base on the anatomy grid) |
+| `ase_base_al_mat_settings.txt` | 6 | the settings the matrix was made with (`anatSource`, target, `registerDof`, `allineateOpts`); a mismatch on a later run re-registers |
+| `anat_fs_aparc_aseg_ase.nii.gz`, `anat_fs_wmparc_ase.nii.gz`, `anat_fs_bstem_ase.nii.gz` | 7 | segmentations in ASE space (on the 1 mm anatomical grid; ROI membership is sub-sampled from these) |
+| `anat_fs_xvent_mask_ase.nii.gz` | 8 | tissue fraction on the ASE grid, used for the CSF criterion |
+
+With the legacy `anatSource=afni`, stage 5 instead copies `anat_fs_*_al.nii.gz` from `session_afni_nortc` (BOLD-aligned), the stage 7–8 outputs carry `_al` (`anat_fs_aparc_aseg_al_ase.nii.gz`, …), and stage 7b can build the SynthSeg tissue fraction `anat_fs_tissueFrac_al.nii.gz`.
 
 ## Fit run (`<subject>/session_ase/fits/<timestamp>[_<tag>]/`, prefix `ase_fit_results`)
 

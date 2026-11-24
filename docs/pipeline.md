@@ -8,7 +8,7 @@ This page explains, step by step, how raw ASE DICOMs become OEF, R2′, vCBV and
 flowchart TD
     subgraph IN["Inputs, per subject"]
         DCM["ASE DICOMs<br/>raw_data/dcm/{series}"]
-        ANAT["FreeSurfer / AFNI anatomy<br/>session_afni_nortc/*+orig"]
+        ANAT["FreeSurfer recon<br/>fsrecon/mri/*.mgz"]
         LIST["datalist_ase<br/>(subject → echo-1 series)"]
     end
 
@@ -17,10 +17,10 @@ flowchart TD
         S2["2. dTE / z-moment table from image comments<br/>(Siemens_ase_XA30.sh)"]
         S3["3. combined header ase_hdr.json<br/>(TEs, dTEs, z-moments, slice thickness)"]
         S4["4. motion correction → ase_eK_proc.nii.gz<br/>3dvolreg on echo 1; same transforms applied to all echoes"]
-        S5["5. copy anatomy and segmentations (+orig → NIfTI)"]
-        S6["6. register ase_base to the anatomy; inverse matrix"]
+        S5["5. FreeSurfer volumes → NIfTI (mri_convert);<br/>target = T1 × step(aseg), unifized; xvent mask"]
+        S6["6. register ase_base to the anatomy<br/>(12 parameters by default); inverse matrix"]
         S7["7. segmentations → ASE space (nearest neighbour)"]
-        S7b["7b. optional: SynthSeg tissue fraction"]
+        S7b["7b. legacy route only: SynthSeg tissue fraction"]
         S8["8. quality masks → ASE grid (linear = fractions)"]
         S1 --> S2 --> S3 --> S4
         S5 --> S6 --> S7 --> S8
@@ -49,6 +49,8 @@ flowchart TD
     GROUP --> GPAINT["paintStats.sh --table → group results painted on templates"]
     OUT --> MANAGE["aseManageFits.sh → prune old fit runs"]
 ```
+
+**Anatomy.** Since 2026-11-24 the anatomy comes straight from the FreeSurfer recon (`anatSource = fsrecon`): `T1`, `aseg`, `aparc+aseg`, `wmparc` and the brainstem labels, all on FreeSurfer's own grid. The ASE base is registered once to the unifized T1 brain, and the labels are resampled once into ASE space. The old route (`anatSource = afni`) took BOLD-aligned copies from the o2co2 BOLD pipeline's `session_afni_nortc`; it is kept for reproducing old results. Evidence and figures: [anat-route-report.md](anat-route-report.md).
 
 **Settings precedence**, in both shell scripts: script defaults < the config file (`BashFiles/ase_config.json`) < command-line flags.
 - Pipeline keys go in the config's `"pipeline"` section.
@@ -143,7 +145,7 @@ flowchart TD
 
 | step | file |
 |---|---|
-| preprocessing, stages 1–8 | `BashFiles/asePreProcess.sh` (dTE comments: `BashFiles/Siemens_ase_XA30.sh`) |
+| preprocessing, stages 1–8 | `BashFiles/asePreProcess.sh` (dTE comments: `BashFiles/Siemens_ase_XA30.sh`; cohort link tree: `Scripts/linkO2co2Ase.sh`) |
 | batch fitting | `BashFiles/aseFit.sh` → `CoreMatFiles/runASEFromConfig.m` → `CoreMatFiles/ASE_fitting.m` |
 | header parsing | `Aux_Mat_Functions/readASEHeader.m` |
 | log-linear least squares | `CoreMatFiles/fitMultiRegressor.m` |
@@ -152,5 +154,5 @@ flowchart TD
 | ROI membership | `Aux_Mat_Functions/segToAseMembership.m`, `combineSegVols.m` |
 | viewing / painting / housekeeping | `BashFiles/aseView.sh` (`ASE_Viewer.m`), `paintStats.sh` (`ASE_paintROIStats.m`), `aseManageFits.sh` |
 | group statistics | `BashFiles/aseGroupStats.sh` → `CoreMatFiles/ASE_groupROIStats.m` (helpers: `Aux_Mat_Functions/readCovTable.m`, `applyCovFilters.m`, `findFitRun.m`, `bhFDR.m`) |
-| analysis scripts | `Scripts/regimeBoundarySim.m` (regime-split bias, with noise), `Scripts/anLin2003DesignFit.m` (An & Lin 2003 design), `Scripts/makeDocFigures.m` (figures for these docs) |
+| analysis scripts | `Scripts/regimeBoundarySim.m` (regime-split bias, with noise), `Scripts/anLin2003DesignFit.m` (An & Lin 2003 design), `Scripts/compareAnatRoutes.m` (anatomy routes, [anat-route-report.md](anat-route-report.md)), `Scripts/makeDocFigures.m` (figures for these docs) |
 | tests | `Tests/` (run `runtests('Tests')` with `CoreMatFiles` and `Aux_Mat_Functions` on the path) |
