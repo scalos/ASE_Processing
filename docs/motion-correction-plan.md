@@ -8,7 +8,14 @@ Status: **approach chosen, report built, not yet in the pipeline** (written 2026
 - **Z-shim block** is never registered on its own data: it holds the last anchor's transform. **Echo 2** always reuses echo 1's transforms.
 - **Decision metric:** the largest displacement of any brain voxel over the run, in voxels (each component divided by the voxel size along its axis, so anisotropic voxels are handled). The decision covers the whole run (correct all frames or none).
 - **Thresholds:** below `threshLow`, no correction (suggested by the PI: avoid correction artefacts when real motion is small); between, correct; above `threshHigh`, `highAction` = `correct` or `exclude`. **Not calibrated yet** (placeholders 0.3 / 1.0 voxels); calibrate on cluster subjects with more motion. How `exclude` works (frames vs a repetition; effects on `combineAseReps`, `estimateRepNoise`, z-shim) is deferred until a subject needs it.
-- **Brain mask** for the metric: `ase_brain_mask.nii.gz`, now made by `asePreProcess.sh` stage 9. Note for the pipeline version: it depends on the registration (stage 6), which runs after motion correction (stage 4). Registration only uses `ase_base`, so the motion decision can move after stage 6, or use `3dAutomask` of `ase_base`.
+- **Brain mask** for the metric: `ase_brain_mask.nii.gz`, now made by `asePreProcess.sh` stage 9.
+
+## Next steps
+
+1. **Preprocessing order (to do before the decision goes into the pipeline).** The motion decision needs the brain mask, which needs the registration (stage 6) and the anatomy (stage 5), but motion correction is stage 4. Registration only uses `ase_base` (raw echo-1 frame 0, made before motion correction), so the proposed order is: conversion, header, `ase_base` → anatomy (5) → registration (6) → brain mask → motion estimate on the anchors, decision, and correction → segmentations and quality masks (7–8), which do not depend on motion. To settle: the regeneration flags and their downstream forcing (`--regenAnat` / `--regenRegister` would then force the motion decision), subjects without anatomy (`segNames` empty: fall back to `3dAutomask` of `ase_base`, or skip the decision and keep the current correction), and recording the decision (metric, thresholds, anchors) next to the motion outputs.
+2. **Calibrate the thresholds** on cluster subjects with more motion (`motionReport` on each; then choose `threshLow` / `threshHigh` relative to the voxel size).
+3. **Define `exclude`** once a subject needs it (frames vs a repetition; `combineAseReps`, `estimateRepNoise`, z-shim).
+4. **Pipeline implementation:** register only the anchors, interpolate, apply to both echoes (or skip below `threshLow`); then the evaluation below (fit residuals, maps, Gz agreement, repetition noise) on the chosen settings.
 
 ## Anchor check (bch046, 2026-11-25)
 

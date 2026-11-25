@@ -127,10 +127,14 @@ function drawFigure(R, dTE, an, sw, zs, pFull, pInt, dMap, base, mask, A, file)
     C.shade = [0.95 0.95 0.94];  C.excl = [214 69 65]/255;
     nF = numel(dTE);  fr = (0:nF-1)';
     f = figure('Visible','off','Color','w','Units','pixels','Position',[0 0 1700 1300]);
-    tl = tiledlayout(f, 3, 6, 'TileSpacing', 'compact', 'Padding', 'compact');
+    % three independent rows (normalised [left bottom width height]), so the timeline's right-axis
+    % labels do not narrow the rows below
+    rowPos = {[0.01 0.645 0.98 0.315], [0.01 0.335 0.98 0.30], [0.01 0.01 0.98 0.315]};
 
     % --- displacement timeline (voxels; the decision metric) ---
-    ax = nexttile(tl, [1 6]);  yyaxis(ax, 'left');  hold(ax, 'on');
+    % own nested layout, so the right-axis labels don't narrow the rows below
+    t0 = tiledlayout(f, 1, 1, 'Padding', 'tight', 'OuterPosition', rowPos{1});
+    ax = nexttile(t0);  yyaxis(ax, 'left');  hold(ax, 'on');
     yl = [0 1.08*max([R.dispFull_vox; R.threshHigh*1.15])];
     zband(ax, zs, yl, C);
     for t = [R.threshLow R.threshHigh]
@@ -166,8 +170,7 @@ function drawFigure(R, dTE, an, sw, zs, pFull, pInt, dMap, base, mask, A, file)
     yyaxis(ax, 'left');
 
     % --- six parameters: rotations share one y range, translations another ---
-    t2 = tiledlayout(tl, 1, 6, 'TileSpacing', 'compact', 'Padding', 'tight');
-    t2.Layout.Tile = 7;  t2.Layout.TileSpan = [1 6];
+    t2 = tiledlayout(f, 1, 6, 'TileSpacing', 'compact', 'Padding', 'tight', 'OuterPosition', rowPos{2});
     pn = {'roll (°)','pitch (°)','yaw (°)','dS (mm)','dL (mm)','dP (mm)'};
     grp = {1:3, 4:6};  ylG = zeros(2,2);
     for g = 1:2
@@ -190,8 +193,9 @@ function drawFigure(R, dTE, an, sw, zs, pFull, pInt, dMap, base, mask, A, file)
     end
 
     % --- displacement map at the worst frame: three planes through the brain centroid ---
-    t3 = tiledlayout(tl, 1, 3, 'TileSpacing', 'compact', 'Padding', 'tight');
-    t3.Layout.Tile = 13;  t3.Layout.TileSpan = [1 4];
+    tB = tiledlayout(f, 1, 6, 'TileSpacing', 'compact', 'Padding', 'tight', 'OuterPosition', rowPos{3});
+    t3 = tiledlayout(tB, 1, 3, 'TileSpacing', 'compact', 'Padding', 'tight');
+    t3.Layout.Tile = 1;  t3.Layout.TileSpan = [1 4];
     cmapD = interp1(linspace(0,1,6), [40 11 84; 101 21 110; 159 42 99; 212 72 66; 245 125 21; 250 193 39]/255, ...
         linspace(0,1,256));
     cmax = max(dMap(:), [], 'omitnan');
@@ -224,7 +228,7 @@ function drawFigure(R, dTE, an, sw, zs, pFull, pInt, dMap, base, mask, A, file)
         'FontSize', 11, 'Color', C.ink);
 
     % --- decision panel ---
-    ax = nexttile(tl, 17, [1 2]);
+    ax = nexttile(tB, 5, [1 2]);
     set(ax, 'Box', 'on', 'XTick', [], 'YTick', [], 'XColor', C.ink2, 'YColor', C.ink2, 'LineWidth', 1, ...
         'XLim', [0 1], 'YLim', [0 1]);
     switch R.decision
@@ -247,7 +251,9 @@ function drawFigure(R, dTE, an, sw, zs, pFull, pInt, dMap, base, mask, A, file)
     text(ax, 0.04, 0.95, L, 'Units', 'normalized', 'VerticalAlignment', 'top', 'FontSize', 10.5, 'Color', C.ink, ...
         'Interpreter', 'tex');
 
-    title(tl, sprintf('Motion decision: %s', strrep(R.subject, '_', '\_')), 'FontSize', 15, 'Color', C.ink);
+    annotation(f, 'textbox', [0 0.965 1 0.033], 'String', sprintf('Motion decision: %s', R.subject), ...
+        'Interpreter', 'none', 'EdgeColor', 'none', 'HorizontalAlignment', 'center', ...
+        'VerticalAlignment', 'middle', 'FontSize', 15, 'Color', C.ink);
     exportgraphics(f, file, 'Resolution', 200);  close(f);
     fprintf('wrote %s\n', file);
 end

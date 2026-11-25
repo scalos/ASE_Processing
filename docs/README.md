@@ -9,7 +9,7 @@
 | [anat-route-report.md](anat-route-report.md) | proposal with evidence: take the anatomy from the FreeSurfer recon instead of the BOLD pipeline's `session_afni_nortc` (one-subject comparison, figures, decisions needed) |
 | [calibration-plan.md](calibration-plan.md) | the cohort calibration of the quality thresholds and correction defaults (in progress): method, phases, export, decisions needed |
 | [quality-mask-plan.md](quality-mask-plan.md) | the original work order (action plan) for the November 2026 quality-mask build |
-| [motion-correction-plan.md](motion-correction-plan.md) | open problem: echo-1 motion estimates follow the τ-dependent ASE contrast; options and how to evaluate them (not started) |
+| [motion-correction-plan.md](motion-correction-plan.md) | echo-1 motion estimates follow the τ-dependent ASE contrast: chosen approach (short-τ anchor frames, threshold decision), the bch046 check, the per-subject report (`Scripts/motionReport.m`), and next steps including the preprocessing order |
 | [quality-mask-report.md](quality-mask-report.md) | detailed lab log of the November 2026 quality-mask work and review: all numbers, simulations and checks behind decisions.md |
 | `../AnLab_Comp/results/report.md` | comparison with the AnLab pipeline on the same subject |
 
