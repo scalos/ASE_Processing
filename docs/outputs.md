@@ -17,6 +17,7 @@
 | `ase_base_al_mat_settings.txt` | 6 | the settings the matrix was made with (`anatSource`, target, `registerDof`, `allineateOpts`); a mismatch on a later run re-registers |
 | `anat_fs_aparc_aseg_ase.nii.gz`, `anat_fs_wmparc_ase.nii.gz`, `anat_fs_bstem_ase.nii.gz` | 7 | segmentations in ASE space (on the 1 mm anatomical grid; ROI membership is sub-sampled from these) |
 | `anat_fs_xvent_mask_ase.nii.gz` | 8 | tissue fraction on the ASE grid, used for the CSF criterion |
+| `ase_brain_mask.nii.gz` | 9 | brain mask on the ASE grid (byte, 1 = brain): aseg (`fsrecon`) or `anat_fs_brain_al_mask` (`afni`), brain fraction > `brainMaskThresh` |
 
 With the legacy `anatSource=afni`, stage 5 instead copies `anat_fs_*_al.nii.gz` from `session_afni_nortc` (BOLD-aligned), the stage 7–8 outputs carry `_al` (`anat_fs_aparc_aseg_al_ase.nii.gz`, …), and stage 7b can build the SynthSeg tissue fraction `anat_fs_tissueFrac_al.nii.gz`.
 

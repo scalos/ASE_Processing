@@ -20,9 +20,12 @@
 #   7b. optional (anatSource=afni only): build a tissue fraction (tissueFracName) from SynthSeg
 #       posteriors (tissuePosteriorName): 1 - sum(background, CSF, ventricle posteriors) [if missing]
 #   8. resample quality masks (qualityMaskNames) onto the ASE grid (linear -> fractions 0..1)
+#   9. brain mask on the ASE grid (brainMaskName): the anatomy's brain (fsrecon: aseg > 0; afni:
+#      brainMaskSource) resampled linearly and thresholded at brainMaskThresh. Used by
+#      Scripts/motionReport.m; empty brainMaskName = off.
 # Existing outputs are skipped unless regenerated. Regenerating an upstream stage forces its
 # downstream stages (and overwrites). Settings: script defaults < config "pipeline" section < flags.
-# Stages 5-8 are skipped when segNames is empty.
+# Stages 5-9 are skipped when segNames is empty.
 
 scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -81,8 +84,12 @@ tissueFracName="anat_fs_tissueFrac_al.nii.gz"      # built from the posteriors (
 posteriorNonTissueVols="0,3,4,11,12,16,21,22"      # 0-based sub-bricks: background, L lat/inf-lat vent,
                                                    #   3rd, 4th vent, CSF (label 24), R lat/inf-lat vent
 posteriorNVols=33                                  # expected sub-bricks (SynthSeg standard label set)
+# ---- brain mask on the ASE grid (stage 9) ----
+brainMaskName=ase_brain_mask.nii.gz          # empty = not made
+brainMaskSource=auto                         # auto: aseg (fsrecon) or anat_fs_brain_al_mask.nii.gz (afni)
+brainMaskThresh=0.5                          # brain fraction of an ASE voxel needed to count as brain
 
-pipelineKeys="allSubjDir dataList echo1Col echoSpacing nEchos aseSubjDir rawDataDir dcmIndexFile scannerCode commentScript rawNii pattern_dicomHdr pattern_dteHdr aseProcName motionParamName hdrFileName volregOpts motionMode motionMatName motionApplyInterp baseName baseFrame baseAlName anatSource fsSubjDir fsVolumes xventName xventExcludeLabels registerDof regBaseName allineateOpts tformName tformApplyName transferSrcDir transferNames segNames segSuffix qualityMaskNames tissuePosteriorName tissueFracName posteriorNonTissueVols posteriorNVols"
+pipelineKeys="allSubjDir dataList echo1Col echoSpacing nEchos aseSubjDir rawDataDir dcmIndexFile scannerCode commentScript rawNii pattern_dicomHdr pattern_dteHdr aseProcName motionParamName hdrFileName volregOpts motionMode motionMatName motionApplyInterp baseName baseFrame baseAlName anatSource fsSubjDir fsVolumes xventName xventExcludeLabels registerDof regBaseName allineateOpts tformName tformApplyName transferSrcDir transferNames segNames segSuffix qualityMaskNames tissuePosteriorName tissueFracName posteriorNonTissueVols posteriorNVols brainMaskName brainMaskSource brainMaskThresh"
 
 # regeneration / logging / retry
 regenNifti=0; regenComments=0; regenHdr=0; regenMotion=0
@@ -118,7 +125,7 @@ Regeneration (overwrites; downstream stages are forced too):
   --regenAnat           redo stage 5: FreeSurfer conversion (fsrecon) or transfer (afni); forces
                          registration and segmentation transforms. --regenTransfer is the old name.
   --regenRegister        re-register ase_base to anatomical (forces segmentation transforms)
-  --regenTransform       segmentation transforms and quality-mask resampling only
+  --regenTransform       segmentation transforms, quality-mask and brain-mask resampling only
 
 Logging / retry:
   --omitFailLog | --retryMostRecent | --retryFromFile <file> | --help
@@ -251,9 +258,13 @@ case $anatSource in
 	afni)
 		[[ $regBaseName == auto ]] && regBaseName=anat_fs_brain_al.nii.gz
 		[[ $segNames == auto ]] && segNames="anat_fs_aparc_aseg_al.nii.gz,anat_fs_wmparc_al.nii.gz"
-		[[ $qualityMaskNames == auto ]] && qualityMaskNames=anat_fs_xvent_mask_al.nii.gz ;;
+		[[ $qualityMaskNames == auto ]] && qualityMaskNames=anat_fs_xvent_mask_al.nii.gz
+		[[ $brainMaskSource == auto ]] && brainMaskSource=anat_fs_brain_al_mask.nii.gz ;;
 	*) echo "Error: anatSource must be fsrecon or afni (got: $anatSource)" >&2; exit 1 ;;
 esac
+if [[ -n $brainMaskName && ! $brainMaskThresh =~ ^0?\.[0-9]+$ ]]; then
+	echo "Error: brainMaskThresh must be a fraction between 0 and 1 (got: $brainMaskThresh)" >&2; exit 1
+fi
 case $registerDof in
 	12) regWarp=affine_general ;;
 	9)  regWarp=shift_rotate_scale ;;
@@ -335,6 +346,7 @@ elif ((nSeg > 0)); then
 	fi
 fi
 nXfer=${#xferList[@]}
+[[ $anatSource == fsrecon && $brainMaskSource == auto ]] && brainMaskSource=$fsAseg
 # fsrecon: the xvent mask is built when a later stage uses it
 needXvent=0
 if [[ $anatSource == fsrecon ]] && ((nSeg > 0)); then
@@ -412,7 +424,7 @@ check_subject() {
 	missingReasons=""; ok=1
 	echoNums=(); doNiiE=(); doSideE=(); doCommE=(); doMotionE=(); xferDo=(); segDo=(); qmDo=()
 	anyNii=0; anySide=0; anyComm=0; anyMotion=0
-	doRegister=0; doInverse=0; doHdr=0; tfDo=0; brainDo=0; xventDo=0
+	doRegister=0; doInverse=0; doHdr=0; tfDo=0; brainDo=0; xventDo=0; bmDo=0
 
 	if [[ ! -d $subjDir ]]; then
 		missingReasons+="  - subject directory not found: $subjDir${nl}"
@@ -589,6 +601,17 @@ check_subject() {
 				qmDo[k]=1
 			fi
 		done
+
+		# brain mask on the ASE grid: same matrix; redone with the registration or its source
+		if [[ -n $brainMaskName ]]; then
+			srcNew=0
+			if idx=$(xfer_index "$brainMaskSource"); then srcNew=${xferDo[idx]}; fi
+			if ! avail "$brainMaskSource"; then
+				warnMsg+="  - warning: brain mask source $brainMaskSource not available; $brainMaskName not made${nl}"
+			elif ((regenTransform == 1 || doRegister == 1 || srcNew == 1)) || [[ ! -e $subjBase/$brainMaskName ]]; then
+				bmDo=1
+			fi
+		fi
 	fi
 
 	((ok == 1))
@@ -1057,6 +1080,24 @@ stage_qualityMasks() {
 	return 0
 }
 
+# brain mask -> ASE grid: step(source) resampled linearly (brain fraction per ASE voxel), then
+# thresholded at brainMaskThresh
+stage_brainMask() {
+	((nSeg > 0 && bmDo == 1)) || return 0
+	ensure_base || return 1
+	echo "[$subjID] Building $brainMaskName: step($brainMaskSource) on the ASE grid (linear, fraction > $brainMaskThresh; matrix: $tformApplyName)"
+	rm -f "$brainMaskName" .bm_src_tmp.nii.gz .bm_frac_tmp.nii.gz
+	if ! 3dcalc -a "$brainMaskSource" -expr 'step(a)' -datum float -prefix .bm_src_tmp.nii.gz -overwrite || \
+			! 3dAllineate -1Dmatrix_apply "$tformApplyName" -source .bm_src_tmp.nii.gz -master "$baseName" \
+				-final linear -prefix .bm_frac_tmp.nii.gz -overwrite || \
+			! 3dcalc -a .bm_frac_tmp.nii.gz -expr "ispositive(a-$brainMaskThresh)" -datum byte -prefix "$brainMaskName" -overwrite; then
+		rm -f "$brainMaskName" .bm_src_tmp.nii.gz .bm_frac_tmp.nii.gz
+		procErr+="  - could not build $brainMaskName${nl}"; return 1
+	fi
+	rm -f .bm_src_tmp.nii.gz .bm_frac_tmp.nii.gz
+	return 0
+}
+
 process_subject() {
 	procErr=""
 	mkdir -p "$subjBase" && cd "$subjBase" || { procErr+="  - cannot create/enter $subjBase${nl}"; return 1; }
@@ -1069,6 +1110,7 @@ process_subject() {
 	stage_segments || return 1
 	stage_tissueFrac || return 1
 	stage_qualityMasks || return 1
+	stage_brainMask || return 1
 	return 0
 }
 

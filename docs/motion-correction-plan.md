@@ -1,6 +1,30 @@
 # Motion correction and ASE contrast: problem and plan
 
-Status: **open, not started** (written 2026-11-20). Nothing in the pipeline has changed because of this page.
+Status: **approach chosen, report built, not yet in the pipeline** (written 2026-11-20, updated 2026-11-25). Motion correction in `asePreProcess.sh` is unchanged; the decision report is `Scripts/motionReport.m`.
+
+## Decisions so far (2026-11-25)
+
+- **Anchor frames.** Estimate motion only on sweep frames with dTE ≤ `anchorMaxDTE` (near spin-echo contrast), against frame 0. Other frames get transforms interpolated linearly in acquisition order. The window is a setting, so it can be narrowed to dTE = 0 alone.
+- **Z-shim block** is never registered on its own data: it holds the last anchor's transform. **Echo 2** always reuses echo 1's transforms.
+- **Decision metric:** the largest displacement of any brain voxel over the run, in voxels (each component divided by the voxel size along its axis, so anisotropic voxels are handled). The decision covers the whole run (correct all frames or none).
+- **Thresholds:** below `threshLow`, no correction (suggested by the PI: avoid correction artefacts when real motion is small); between, correct; above `threshHigh`, `highAction` = `correct` or `exclude`. **Not calibrated yet** (placeholders 0.3 / 1.0 voxels); calibrate on cluster subjects with more motion. How `exclude` works (frames vs a repetition; effects on `combineAseReps`, `estimateRepNoise`, z-shim) is deferred until a subject needs it.
+- **Brain mask** for the metric: `ase_brain_mask.nii.gz`, now made by `asePreProcess.sh` stage 9. Note for the pipeline version: it depends on the registration (stage 6), which runs after motion correction (stage 4). Registration only uses `ase_base`, so the motion decision can move after stage 6, or use `3dAutomask` of `ase_base`.
+
+## Anchor check (bch046, 2026-11-25)
+
+Displacement = largest over brain voxels (3dAutomask of `ase_base`), in voxels, all relative to frame 0.
+
+| anchors (dTE ≤) | frames | largest gap | max displacement | dTE bias left in the anchors (est.) |
+|---|---|---|---|---|
+| 0 ms | 2 | 45 frames | 0.18 | 0 |
+| 4 ms | 10 | 25 | 0.21 | 0.04 |
+| **8 ms (default)** | **18** | **5 (19 s)** | **0.24** | **0.09** |
+| 9 ms | 20 | 5 | 0.24 | 0.10 |
+| 17 ms | 36 | 4 | 0.26 | 0.18 |
+
+Registering every frame (current pipeline) gives 0.47 voxels on the sweep and 1.44 in the z-shim block, so a threshold near half a voxel would have corrected this subject because of contrast alone. Small windows bunch the anchors in the second half of each repetition (dTE 1–4 are acquired at frames 25–40), so 8 ms is the smallest window with an anchor every 5 frames. Among the 8 ms anchors, dTE explains 2% of dP (83% over all frames). With the pipeline brain mask (afni route) the bch046 metric is 0.23 voxels (0.43 mm): **no correction**, which matches the PI's reading of `reg5_motion.png`.
+
+**Report:** `motionReport('<subj>/session_ase')` writes `motion_report.png`: the displacement timeline with the thresholds and acquisition times, the six parameters (anchors and interpolation over the every-frame estimates), the displacement map at the worst frame in three planes, and the decision panel. Example: [figures/motion/motion_report_bch046.png](figures/motion/motion_report_bch046.png). It reads `ase_hdr.json`, `ase_base.nii.gz`, the raw echo-1 NIfTI, `ase_brain_mask.nii.gz` and `ase_e1_mc_mat.aff12.1D` (or reruns 3dvolreg on echo 1 if the matrices are missing).
 
 ## The problem
 

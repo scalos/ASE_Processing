@@ -22,8 +22,9 @@ flowchart TD
         S7["7. segmentations → ASE space (nearest neighbour)"]
         S7b["7b. legacy route only: SynthSeg tissue fraction"]
         S8["8. quality masks → ASE grid (linear = fractions)"]
+        S9["9. brain mask → ASE grid (ase_brain_mask)"]
         S1 --> S2 --> S3 --> S4
-        S5 --> S6 --> S7 --> S8
+        S5 --> S6 --> S7 --> S8 --> S9
         S7b -.-> S8
     end
 
